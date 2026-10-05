@@ -68,7 +68,7 @@ describe('GrowthScheduler', () => {
   })
 
   it('still runs when a user asks, even with automation off', async () => {
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: { credit: 100, energy: 5 } } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: { credit: 100, energy: 5 } } : BOARD)
     const s = scheduler({ enabled: false, client })
     const summary = await s.sweep(true)
     expect(summary).toBeDefined()
@@ -77,7 +77,9 @@ describe('GrowthScheduler', () => {
 
   it('enrols unenrolled tasks and claims the claimable one', async () => {
     const { client, calls } = scriptedClient(url =>
-      url.includes('/accept') ? { code: 0 }
+      // The accept verdict rides INSIDE the envelope; a board with no results
+      // means the upstream enrolled nothing.
+      url.includes('/accept') ? { code: 0, data: { results: [{ task_code: 'a', status: 'ok' }] } }
       : url.includes('/claim') ? { code: 0, data: { credit: 100, energy: 5 } }
       : BOARD)
     const s = scheduler({ client })
@@ -89,7 +91,7 @@ describe('GrowthScheduler', () => {
   })
 
   it('runs an account ONCE a day, then leaves it alone', async () => {
-    const { client, calls } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client, calls } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     const s = scheduler({ client })
     await s.sweep()
     const afterFirst = calls.length
@@ -99,7 +101,7 @@ describe('GrowthScheduler', () => {
   })
 
   it('runs again on a NEW day', async () => {
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     let now = new Date(2026, 2, 4, 10, 0).getTime()
     const s = scheduler({ client, now: () => now })
     await s.sweep()
@@ -111,7 +113,7 @@ describe('GrowthScheduler', () => {
 
   it('a machine off for a week runs ONCE, not seven times', async () => {
     // The ledger records the day, not a counter.
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     let now = new Date(2026, 2, 4, 10, 0).getTime()
     const s = scheduler({ client, now: () => now })
     await s.sweep()
@@ -156,7 +158,7 @@ describe('GrowthScheduler', () => {
   })
 
   it('does not start a second pass while one is running', async () => {
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     const s = scheduler({ client })
     const first = s.sweep()
     const second = await s.sweep()
@@ -165,7 +167,7 @@ describe('GrowthScheduler', () => {
   })
 
   it('persists the day so a restart does not re-run', async () => {
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     const now = new Date(2026, 2, 4, 10, 0).getTime()
     await scheduler({ client, now: () => now }).sweep()
 
@@ -176,7 +178,7 @@ describe('GrowthScheduler', () => {
   it('treats a corrupt ledger as an empty one', async () => {
     const { writeFile } = await import('node:fs/promises')
     await writeFile(growthLedgerPath(), '{ not json', 'utf8')
-    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0 } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
+    const { client } = scriptedClient(url => url.includes('/accept') ? { code: 0, data: { results: [] } } : url.includes('/claim') ? { code: 0, data: {} } : BOARD)
     const s = scheduler({ client })
     expect(await s.sweep()).toBeDefined()
   })
@@ -191,7 +193,7 @@ describe('GrowthScheduler', () => {
     let n = 0
     const fetchImpl = (async (url: string | URL) => {
       const u = String(url)
-      if (u.includes('/accept')) return new Response(JSON.stringify({ code: 0 }), { status: 200 })
+      if (u.includes('/accept')) return new Response(JSON.stringify({ code: 0, data: { results: [] } }), { status: 200 })
       if (u.includes('/claim')) { n += 1; return new Response(JSON.stringify(n === 1 ? { code: 9, msg: 'nope' } : { code: 0, data: { credit: 50 } }), { status: 200 }) }
       return new Response(JSON.stringify(TWO_CLAIMABLE), { status: 200 })
     }) as unknown as typeof fetch

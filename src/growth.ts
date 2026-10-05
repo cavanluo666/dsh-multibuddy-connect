@@ -60,6 +60,15 @@ export interface GrowthTask {
   hasReward: boolean
 }
 
+/** One task's verdict from an accept call. */
+export interface GrowthAcceptResult {
+  code: string
+  /** Whether the upstream enrolled the task. */
+  ok: boolean
+  /** Why it refused, when it did (e.g. an unmet prerequisite). */
+  message?: string
+}
+
 /** A task board read. */
 export interface GrowthBoard {
   tasks: readonly GrowthTask[]
@@ -314,15 +323,43 @@ export class WorkBuddyGrowthClient {
    * @param credential - the account.
    * @param codes - the task codes to accept.
    */
-  async acceptTasks(credential: WorkBuddyCredential, codes: readonly string[]): Promise<void> {
-    if (codes.length === 0) return
+  async acceptTasks(credential: WorkBuddyCredential, codes: readonly string[]): Promise<readonly GrowthAcceptResult[]> {
+    if (codes.length === 0) return []
     const response = await this.fetchImpl(growthOrigin() + GROWTH_PATH + '/accept', {
       method: 'POST',
       headers: chatHeaders(credential),
       body: JSON.stringify({ task_codes: [...codes] }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
-    await readEnvelope(response)
+    const envelope = await readEnvelope(response)
+    // A PER-TASK verdict rides INSIDE a successful envelope.
+    //
+    // Measured behaviour: accepting a task whose prerequisite is unmet answers
+    // HTTP 200 with `code: 0` at the envelope level, and reports the refusal only
+    // as `data.results[].status === 'error'` with a message such as
+    // "prerequisite not met: first_buddy". Treating the envelope code as the
+    // answer therefore reports success for every task and leaves the user with a
+    // board that never fills — the failure is real, per-task, and must be read
+    // from here.
+    const data = typeof envelope.data === 'object' && envelope.data !== null && !Array.isArray(envelope.data)
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const raw = Array.isArray(data['results']) ? data['results'] : []
+    const results: GrowthAcceptResult[] = []
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+      const record = entry as Record<string, unknown>
+      const code = typeof record['task_code'] === 'string' ? record['task_code'] : ''
+      if (code === '') continue
+      results.push({
+        code,
+        ok: record['status'] !== 'error',
+        ...typeof record['message'] === 'string' && record['message'] !== ''
+          ? { message: record['message'] }
+          : {},
+      })
+    }
+    return results
   }
 
   /**

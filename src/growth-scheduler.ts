@@ -301,8 +301,16 @@ export class GrowthScheduler {
     let accepted = 0
     if (toAccept.length > 0) {
       try {
-        await this.client.acceptTasks(credential, toAccept)
-        accepted = toAccept.length
+        const verdicts = await this.client.acceptTasks(credential, toAccept)
+        accepted = verdicts.filter(verdict => verdict.ok).length
+        // A REFUSED task is reported with its own reason. The commonest is an
+        // unmet prerequisite ("prerequisite not met: first_buddy"), which chains
+        // the board: one root task needs real product use before any of the
+        // others can even be enrolled. Saying so is the difference between a
+        // board that looks broken and one that explains itself.
+        for (const verdict of verdicts) {
+          if (!verdict.ok) failures.push(verdict.code + ': ' + (verdict.message ?? 'refused'))
+        }
       } catch (error: unknown) {
         failures.push('accept: ' + (error instanceof Error ? error.message : String(error)))
       }

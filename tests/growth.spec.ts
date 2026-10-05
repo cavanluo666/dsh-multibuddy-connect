@@ -145,8 +145,29 @@ describe('acceptTasks', () => {
 
   it('does not call the upstream for an empty list', async () => {
     const { client, calls } = makeClient([{ code: 0 }])
-    await client.acceptTasks(CREDENTIAL, [])
+    expect(await client.acceptTasks(CREDENTIAL, [])).toEqual([])
     expect(calls).toEqual([])
+  })
+
+  it('reports a PER-TASK refusal that rode inside a successful envelope', async () => {
+    // Measured against the live service: a task whose prerequisite is unmet
+    // answers HTTP 200 with `code: 0` at the envelope level, and carries the
+    // refusal only in data.results[]. Reading the envelope code as the answer
+    // reports success for every task and leaves the user with a board that never
+    // fills.
+    const { client } = makeClient([{ code: 0, data: { results: [
+      { task_code: 'create_canvas', status: 'error', message: 'prerequisite not met: first_buddy' },
+      { task_code: 'chat_5', status: 'ok' },
+    ] } }])
+    const results = await client.acceptTasks(CREDENTIAL, ['create_canvas', 'chat_5'])
+    expect(results).toHaveLength(2)
+    expect(results[0]).toEqual({ code: 'create_canvas', ok: false, message: 'prerequisite not met: first_buddy' })
+    expect(results[1]).toEqual({ code: 'chat_5', ok: true })
+  })
+
+  it('treats an envelope with no results as an empty verdict list', async () => {
+    const { client } = makeClient([{ code: 0, data: {} }])
+    expect(await client.acceptTasks(CREDENTIAL, ['a'])).toEqual([])
   })
 })
 

@@ -1365,6 +1365,14 @@ interface GrowthTask {
   /** Whether the upstream says a reward is attached at all. */
   hasReward: boolean;
 }
+/** One task's verdict from an accept call. */
+interface GrowthAcceptResult {
+  code: string;
+  /** Whether the upstream enrolled the task. */
+  ok: boolean;
+  /** Why it refused, when it did (e.g. an unmet prerequisite). */
+  message?: string;
+}
 /** A task board read. */
 interface GrowthBoard {
   tasks: readonly GrowthTask[];
@@ -1480,7 +1488,7 @@ declare class WorkBuddyGrowthClient {
    * @param credential - the account.
    * @param codes - the task codes to accept.
    */
-  acceptTasks(credential: WorkBuddyCredential, codes: readonly string[]): Promise<void>;
+  acceptTasks(credential: WorkBuddyCredential, codes: readonly string[]): Promise<readonly GrowthAcceptResult[]>;
   /**
    * Collect one task's reward. Idempotent: a repeat answers already_claimed.
    *
