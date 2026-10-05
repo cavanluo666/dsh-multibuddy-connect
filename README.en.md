@@ -7,6 +7,24 @@ Bring the subscription quota of **nine AI coding products** into
 > For the full documentation, see the [Chinese README](./README.md), which is
 > the primary one. This file is a summary.
 
+## ⚠️ Work in progress
+
+**This project is incomplete. Treat it as experimental.**
+
+The shell and the management plane work; the data plane is only partly built.
+
+| Layer | Status |
+|---|---|
+| Shell (WorkBuddy variants, usage dashboard, backend config card) | ✅ Working |
+| Account detection / quota / model rosters for all 9 backends | ✅ Done |
+| Transport layer (actually sending messages) | ⚠️ **Only 3 of 9** |
+
+**Only Cline, CodeBuddy and OpenCode can actually send messages**, and each has
+unverified aspects.
+
+**The other five are detection-and-reporting only** and will NOT appear in the
+model picker: Trae · Qoder · MiMo · Loomy · Command Code Go. See "Known gaps".
+
 ## Author
 
 **cavanluo666**
@@ -14,6 +32,7 @@ Bring the subscription quota of **nine AI coding products** into
 - Website: <https://246644.xyz>
 - Bilibili: <https://space.bilibili.com/3493095616284680>
 - GitHub: <https://github.com/cavanluo666>
+- Mirror (Gitee): <https://gitee.com/luo-com-cn/dsh-multibuddy-connect>
 
 ## Derivative work
 
@@ -24,17 +43,17 @@ for upstream attribution.
 
 ## Supported backends
 
-| Backend | Vendor | Credential source | Multi-account | Quota |
-|---|---|---|:---:|:---:|
-| WorkBuddy / WorkBuddy AI | Tencent | Plugin's own web device authorization | Yes | Yes |
-| Trae | ByteDance | Desktop sign-in (4 installs) | Yes (2 regions) | See gaps |
-| Qoder | Alibaba | Desktop sign-in / PAT env var | Yes (2 regions) | See gaps |
-| CodeBuddy | Tencent | Desktop login file (read-only) | No | No endpoint |
-| MiMo | Xiaomi | Desktop cookie / plugin credential | No | Yes |
-| Loomy | iFlytek | Desktop `auth-session.json` (read-only) | No | No endpoint |
-| Cline | Cline | API key | Yes | Free tier |
-| Command Code Go | Command Code | API key | Yes | No endpoint |
-| OpenCode Zen | OpenCode | Managed local runtime | No | No endpoint |
+| Backend | Vendor | Credential source | Can chat | Multi-account | Quota |
+|---|---|---|:---:|:---:|:---:|
+| WorkBuddy / WorkBuddy AI | Tencent | Plugin's own web device authorization | ✅ | Yes | Yes |
+| Cline | Cline | API key | ✅ | Yes | Free tier |
+| CodeBuddy | Tencent | Desktop login file (read-only) | ⚠️ unverified | No | No endpoint |
+| OpenCode Zen | OpenCode | Managed local runtime | ⚠️ needs proxy | No | No endpoint |
+| Trae | ByteDance | Desktop sign-in (4 installs) | ❌ **detect only** | Yes (2 regions) | See gaps |
+| Qoder | Alibaba | Desktop sign-in / PAT env var | ❌ **detect only** | Yes (2 regions) | See gaps |
+| MiMo | Xiaomi | Desktop cookie / plugin credential | ❌ **detect only** | No | Yes |
+| Loomy | iFlytek | Desktop `auth-session.json` (read-only) | ❌ **detect only** | No | No endpoint |
+| Command Code Go | Command Code | API key | ❌ **detect only** | Yes | No endpoint |
 
 ## Multi-account, honestly stated
 

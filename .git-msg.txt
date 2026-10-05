@@ -1,0 +1,18 @@
+标注半成品状态、移除未纳入项目一节、添加 Gitee 镜像
+
+README
+- 顶部加「⚠️ 这是半成品」区块：明确只有 3 个后端能真正发消息
+  （Cline / CodeBuddy / OpenCode，且各有未验证之处），
+  另外 5 个（Trae / Qoder / MiMo / Loomy / Command Code Go）只能识别与上报，
+  不会出现在模型选择器里。
+- 后端表格新增「能否对话」列 —— 区分「已接入」与「只被识别」，这是最重要的一列。
+- 已知缺口补上传播输层缺失、OpenCode 的 Basic 认证冲突、
+  CodeBuddy 可能缺的额外请求头、以及模型名册是快照。
+- 添加 Gitee 镜像地址（作者区与联系区）。
+
+THIRD_PARTY_NOTICES.md
+- 删除「三、未被纳入的项目」一节（商汤技能包 / 0-tools / im-connect / agent-sync）。
+  这些项目本就不在本插件范围内，单列一节反而容易让读者以为它们「被考虑过但拒绝」。
+- 章节号顺移：四→三、五→四。
+
+README.en.md 同步：半成品说明、镜像地址、表格新增「Can chat」列。

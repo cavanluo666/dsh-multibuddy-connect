@@ -11,6 +11,27 @@
 
 ---
 
+## ⚠️ 这是半成品
+
+**本项目尚未完成，请按实验性软件对待。** 外壳与「管理面」可用，但「数据面」只做了一部分。
+
+| 层面 | 状态 |
+|---|---|
+| 插件外壳（WorkBuddy 两个变体、用量汇总面板、多后端配置卡片） | ✅ 可用 |
+| 9 个后端的**账号识别 / 额度读取 / 模型名册** | ✅ 完成 |
+| 9 个后端的**传输层（真正能发消息）** | ⚠️ **只做了 3 个** |
+
+**能真正发消息的只有 3 个**：Cline、CodeBuddy、OpenCode —— 且这三个各自还有未验证之处。
+
+**另外 5 个只能「识别 + 上报」**，不会出现在模型选择器里：
+
+> Trae · Qoder · MiMo · Loomy · Command Code Go
+
+它们的账号探测、额度读取（有的）、模型名册都能工作，但**没有任何传输层**，
+所以你不能用它们对话。这是最大的未完成项，详见下方「已知缺口」。
+
+---
+
 ## 作者
 
 **cavanluo666**
@@ -18,6 +39,7 @@
 - 个人网站：<https://246644.xyz>
 - Bilibili：<https://space.bilibili.com/3493095616284680>
 - GitHub：<https://github.com/cavanluo666>
+- 仓库镜像（Gitee）：<https://gitee.com/luo-com-cn/dsh-multibuddy-connect>
 
 欢迎反馈问题、提交 PR，或在 Bilibili 私信交流。
 
@@ -25,18 +47,22 @@
 
 ## 支持的后端
 
-| 后端 | 厂商 | 凭据来源 | 多账号 | 额度查询 |
-|---|---|---|:---:|:---:|
-| **WorkBuddy** | 腾讯 | 插件自己的网页设备授权登录 | ✅ 双版本 | ✅ |
-| **WorkBuddy AI** | 腾讯 | 同上（国际版 realm） | ✅ 双版本 | ✅ |
-| **Trae** | 字节跳动 | 桌面端已登录状态（4 个安装位） | ✅ 双区域 | ⚠️ 见下 |
-| **Qoder** | 阿里巴巴 | 桌面端已登录状态 / PAT 环境变量 | ✅ 双区域 | ⚠️ 见下 |
-| **CodeBuddy** | 腾讯 | 桌面端登录文件（只读） | ❌ | ❌ 上游无接口 |
-| **MiMo** | 小米 | 桌面端 cookie / 插件凭据 | ❌ | ✅ |
-| **Loomy** | 讯飞 | 桌面端 `auth-session.json`（只读） | ❌ | ❌ 上游无接口 |
-| **Cline** | Cline | API Key | ✅ 多 Key | ❌ 免费档无余额 |
-| **Command Code Go** | Command Code | API Key | ✅ 多 Key | ❌ 上游无接口 |
-| **OpenCode Zen** | OpenCode | 受管本地运行时 | ❌ | ❌ 上游无接口 |
+**「能否对话」是这张表最重要的一列** —— 它区分了「已接入」和「只被识别」：
+
+| 后端 | 厂商 | 凭据来源 | 能否对话 | 多账号 | 额度查询 |
+|---|---|---|:---:|:---:|:---:|
+| **WorkBuddy** | 腾讯 | 插件自己的网页设备授权登录 | ✅ | ✅ 双版本 | ✅ |
+| **WorkBuddy AI** | 腾讯 | 同上（国际版 realm） | ✅ | ✅ 双版本 | ✅ |
+| **Cline** | Cline | API Key | ✅ | ✅ 多 Key | ❌ 免费档无余额 |
+| **CodeBuddy** | 腾讯 | 桌面端登录文件（只读） | ⚠️ 未验证 | ❌ | ❌ 上游无接口 |
+| **OpenCode Zen** | OpenCode | 受管本地运行时 | ⚠️ 需代理 | ❌ | ❌ 上游无接口 |
+| **Trae** | 字节跳动 | 桌面端已登录状态（4 个安装位） | ❌ **仅识别** | ✅ 双区域 | ⚠️ 见下 |
+| **Qoder** | 阿里巴巴 | 桌面端已登录状态 / PAT 环境变量 | ❌ **仅识别** | ✅ 双区域 | ⚠️ 见下 |
+| **MiMo** | 小米 | 桌面端 cookie / 插件凭据 | ❌ **仅识别** | ❌ | ✅ |
+| **Loomy** | 讯飞 | 桌面端 `auth-session.json`（只读） | ❌ **仅识别** | ❌ | ❌ 上游无接口 |
+| **Command Code Go** | Command Code | API Key | ❌ **仅识别** | ✅ 多 Key | ❌ 上游无接口 |
+
+> 「仅识别」= 账号探测、额度读取、模型名册可工作，但**没有传输层，无法对话**。
 
 ### 「多账号」到底能做到什么
 
@@ -128,6 +154,10 @@ dsh --profile web
 
 | 后端 | 缺口 | 你会看到 |
 |---|---|---|
+| **Trae / Qoder / MiMo / Loomy / Command Code Go** | **完全没有传输层** | 不出现在模型选择器；只在配置卡片与用量面板里可见 |
+| **OpenCode Zen** | 原生 server 用 Basic 认证且无 `/v1/chat/completions` | 需一个 Bearer 校验的 OpenAI 兼容回环代理，直连会 401/404 |
+| **CodeBuddy** | 聊天可能还需 `X-CodeBuddy-Request` 等额外头，接口只能表达 Bearer | 未对着真实网关验证 |
+| **Cline / CodeBuddy / OpenCode** | 模型名册是注册时的快照 | feed 不可达时名册为空，需配置写入或重启刷新 |
 | **Qoder** | 未实现 OSCrypt/DPAPI 解密链 | 显示「已安装但未采用」，提示改用 PAT |
 | **Qoder** | 未实现额度查询 | 「需通过网关查询」 |
 | **Trae** | 未实现 pay 端点查询 | 「需在客户端内查询」 |
@@ -193,3 +223,4 @@ pnpm run build       # 产出 lib/
 - 个人网站：<https://246644.xyz>
 - Bilibili：<https://space.bilibili.com/3493095616284680>
 - 问题反馈：[GitHub Issues](https://github.com/cavanluo666/dsh-multibuddy-connect/issues)
+- 仓库镜像（Gitee）：<https://gitee.com/luo-com-cn/dsh-multibuddy-connect>
