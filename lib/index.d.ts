@@ -2572,7 +2572,15 @@ declare const HEARTBEAT_FORMAT_VERSION = 1;
 /** On-disk shape of the heartbeat. */
 interface WorkBuddyHostHeartbeat {
   version: typeof HEARTBEAT_FORMAT_VERSION;
-  package: 'dsh-workbuddy-connect';
+  /**
+   * Which package wrote this heartbeat.
+   *
+   * Typed as a plain string rather than the constant's literal type: the file
+   * is read back from disk, so the value is untrusted input until the reader
+   * compares it against {@link PLUGIN_PACKAGE_NAME}. Declaring the narrowest
+   * type here would assert something about a file this module did not write.
+   */
+  package: string;
   pluginVersion: string;
   /** Epoch milliseconds when the host registered the provider. */
   registeredAt: number;

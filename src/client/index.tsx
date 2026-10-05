@@ -32,6 +32,7 @@ import type { SettingsScope } from './quota-settings-store.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+import { PLUGIN_PACKAGE_NAME } from '../plugin-name.ts'
 import { WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebStatus } from '../status-paths.ts'
 
@@ -76,11 +77,13 @@ export const inject = ['slots', 'locale', 'remote', 'remote.session']
 /**
  * This plugin's package name.
  *
- * Used as the entry `id` inside the shared 《插件设置》 block: the three connect
- * plugins share one container, and the container requires a distinct `id` per
- * contribution, so the package name is the one identifier guaranteed unique.
+ * Used as the entry `id` inside the shared 《插件设置》 block and as the
+ * `plugins.bundle.config` slot key. The latter must spell the package name
+ * exactly — the plugin manager's configuration ledger reads that key to decide
+ * whether this bundle's settings section renders at all — so it comes from the
+ * build-time constant rather than a literal that a rename would leave behind.
  */
-const PACKAGE_NAME = 'dsh-workbuddy-connect'
+const PACKAGE_NAME = PLUGIN_PACKAGE_NAME
 
 /**
  * The shared 《插件设置》 container the three connect plugins agree on: slot

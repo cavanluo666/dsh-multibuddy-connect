@@ -33,7 +33,7 @@
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "bin": {
-    "dsh-workbuddy-connect": "lib/bin.js"
+    "dsh-multibuddy-connect": "lib/bin.js"
   },
   "scripts": {
     "prepack": "npm run build",

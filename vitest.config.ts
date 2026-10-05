@@ -1,14 +1,19 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vitest/config'
 
-/** Mirror the build-time define from tsdown.config.ts so tests see the same version. */
-const PACKAGE_VERSION = JSON.parse(
+/**
+ * Mirror the build-time defines from tsdown.config.ts so tests see the same
+ * values the bundle is built with — including the package NAME, which several
+ * lookups match by exact string.
+ */
+const MANIFEST = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
-).version as string
+) as { name: string; version: string }
 
 export default defineConfig({
   define: {
-    __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION),
+    __DSH_WORKBUDDY_VERSION__: JSON.stringify(MANIFEST.version),
+    __DSH_PLUGIN_NAME__: JSON.stringify(MANIFEST.name),
   },
   test: {
     include: ['tests/**/*.spec.ts'],

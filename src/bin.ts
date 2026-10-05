@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Standalone status/diagnostics CLI for the dsh-workbuddy-connect bundle. */
+/** Standalone status/diagnostics CLI for the dsh-multibuddy-connect bundle. */
 
 import { realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -12,6 +12,7 @@ import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { resolveAppVersion } from './app-version.ts'
+import { PLUGIN_PACKAGE_NAME } from './plugin-name.ts'
 
 type Action = 'doctor' | 'import' | 'login' | 'logout' | 'status'
 
@@ -27,7 +28,7 @@ function safeMessage(error: unknown): string {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage: dsh-workbuddy-connect <doctor|import|login|status|logout> [--provider <id>] [--json] [--file <path>]',
+    `Usage: ${PLUGIN_PACKAGE_NAME} <doctor|import|login|status|logout> [--provider <id>] [--json] [--file <path>]`,
     '',
     '  doctor   secret-free environment diagnostics',
     '  import   adopt a credential document you already have (see --file)',
@@ -80,7 +81,7 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   const appVersion = variant.region === 'global' ? await resolveAppVersion() : undefined
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
-    package: 'dsh-workbuddy-connect',
+    package: PLUGIN_PACKAGE_NAME,
     version: WORKBUDDY_CONNECT_VERSION,
     node: process.version,
     provider: variant.id,
@@ -103,7 +104,7 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     signIn: status.state,
     fallbackModels: fallbackCount(variant),
     hints: [
-      ...status.state === 'signed-in' ? [] : [`Sign in with \`dsh-workbuddy-connect login --provider ${variant.id}\`, or from the plugin's settings card.`],
+      ...status.state === 'signed-in' ? [] : [`Sign in with \`${PLUGIN_PACKAGE_NAME} login --provider ${variant.id}\`, or from the plugin's settings card.`],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card is unavailable until DSH starts the plugin; the login command above still works.'],
     ],
   }
@@ -134,7 +135,7 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   const hostState = hostAlive ? 'running' : heartbeat !== undefined ? 'stale' : 'not-started'
   if (authStatus.state !== 'signed-in') {
     if (jsonOutput) {
-      printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, provider: variant.id, status: 'signed-out', hostBundle: hostState })
+      printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: PLUGIN_PACKAGE_NAME, version: WORKBUDDY_CONNECT_VERSION, provider: variant.id, status: 'signed-out', hostBundle: hostState })
     } else {
       process.stdout.write(`${variant.displayName} Connect: signed out\nHost bundle: ${hostState}\n`)
     }
@@ -157,7 +158,7 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   if (jsonOutput) {
     printJson({
       schemaVersion: JSON_SCHEMA_VERSION,
-      package: 'dsh-workbuddy-connect',
+      package: PLUGIN_PACKAGE_NAME,
       version: WORKBUDDY_CONNECT_VERSION,
       provider: variant.id,
       status: 'signed-in',
@@ -218,7 +219,7 @@ async function importCredential(variant: WorkBuddyVariant, file: string): Promis
     try {
       text = await readFile(file, 'utf8')
     } catch (error: unknown) {
-      process.stderr.write(`dsh-workbuddy-connect: cannot read ${file}: ${safeMessage(error)}\n`)
+      process.stderr.write(`${PLUGIN_PACKAGE_NAME}: cannot read ${file}: ${safeMessage(error)}\n`)
       return 1
     }
   }
@@ -226,7 +227,7 @@ async function importCredential(variant: WorkBuddyVariant, file: string): Promis
   try {
     credential = await store.importDocument(text)
   } catch (error: unknown) {
-    process.stderr.write(`dsh-workbuddy-connect: import refused: ${safeMessage(error)}\n`)
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: import refused: ${safeMessage(error)}\n`)
     return 1
   }
   const expires = credential.expiresAtMs > 0 ? new Date(credential.expiresAtMs).toISOString() : '(no expiry stated)'
@@ -278,7 +279,7 @@ async function login(variant: WorkBuddyVariant): Promise<number> {
       const region = resolveLoginRegion(variant.region, outcome.tokens.domain)
       if (region !== variant.region) {
         process.stderr.write(
-          `dsh-workbuddy-connect: this sign-in returned a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} account,`
+          `${PLUGIN_PACKAGE_NAME}: this sign-in returned a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} account,`
           + ` which belongs to the other provider; run login with --provider ${region === 'cn' ? CN_VARIANT.id : 'workbuddy-ai'}\n`,
         )
         return 1
@@ -301,7 +302,7 @@ async function login(variant: WorkBuddyVariant): Promise<number> {
     }
     await new Promise(resolve => setTimeout(resolve, LOGIN_POLL_INTERVAL_MS))
   }
-  process.stderr.write('dsh-workbuddy-connect: timed out waiting for the browser sign-in; run login again to get a fresh URL\n')
+  process.stderr.write(`${PLUGIN_PACKAGE_NAME}: timed out waiting for the browser sign-in; run login again to get a fresh URL\n`)
   return 1
 }
 
@@ -314,7 +315,7 @@ export async function run(argv: readonly string[]): Promise<number> {
   const [rawAction, ...flags] = argv
   const actions: readonly Action[] = ['doctor', 'import', 'login', 'logout', 'status']
   if (!actions.includes(rawAction as Action)) {
-    process.stderr.write(`dsh-workbuddy-connect: expected doctor, import, login, logout, or status; got ${JSON.stringify(rawAction)}\n`)
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: expected doctor, import, login, logout, or status; got ${JSON.stringify(rawAction)}\n`)
     return 1
   }
   const action = rawAction as Action
@@ -351,21 +352,21 @@ export async function run(argv: readonly string[]): Promise<number> {
   const variant = providerId === undefined ? CN_VARIANT : variantFor(providerId)
   if (variant === undefined) {
     process.stderr.write(
-      `dsh-workbuddy-connect: unknown provider ${JSON.stringify(providerId)}; expected one of ${WORKBUDDY_VARIANTS.map(v => v.id).join(', ')}\n`,
+      `${PLUGIN_PACKAGE_NAME}: unknown provider ${JSON.stringify(providerId)}; expected one of ${WORKBUDDY_VARIANTS.map(v => v.id).join(', ')}\n`,
     )
     return 1
   }
   const unknown = rest.filter(flag => flag !== '--json')
   if (unknown.length > 0 || (jsonOutput && action !== 'doctor' && action !== 'status')) {
-    process.stderr.write(`dsh-workbuddy-connect: invalid options for ${action}: ${flags.join(' ')}\n`)
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: invalid options for ${action}: ${flags.join(' ')}\n`)
     return 1
   }
   if (action === 'import' && file === undefined) {
-    process.stderr.write('dsh-workbuddy-connect: import needs --file <path> (or --file - for standard input)\n')
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: import needs --file <path> (or --file - for standard input)\n`)
     return 1
   }
   if (action !== 'import' && file !== undefined) {
-    process.stderr.write(`dsh-workbuddy-connect: --file applies to import, not ${action}\n`)
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: --file applies to import, not ${action}\n`)
     return 1
   }
   try {
@@ -390,7 +391,7 @@ export async function run(argv: readonly string[]): Promise<number> {
       }
     }
   } catch (error: unknown) {
-    process.stderr.write(`dsh-workbuddy-connect: ${action} failed: ${safeMessage(error)}\n`)
+    process.stderr.write(`${PLUGIN_PACKAGE_NAME}: ${action} failed: ${safeMessage(error)}\n`)
     return 1
   }
 }

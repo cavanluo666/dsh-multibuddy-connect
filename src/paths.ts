@@ -23,6 +23,7 @@ import { readFileSync, readdirSync, realpathSync, type Dirent } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { PLUGIN_PACKAGE_NAME } from './plugin-name.ts'
 
 /** The per-profile directory the plugin's data folder lives under. */
 export const WORKBUDDY_DATA_DIR_NAME = '.dsh-workbuddy-connect'
@@ -35,8 +36,24 @@ export const WORKBUDDY_DATA_DIR_ENV = 'DSH_WORKBUDDY_DATA_DIR'
 
 const PROFILES_DIR_NAME = 'profiles'
 
-/** The npm name of this package, as a profile's manifest declares it. */
-const PLUGIN_PACKAGE_NAME = 'dsh-workbuddy-connect'
+/**
+ * Names a profile's manifest may use for THIS package.
+ *
+ * The current name comes from the build-time constant (itself sourced from
+ * package.json); the upstream project's name is accepted as well, because a
+ * profile that installed the original bundle and later gained this one can
+ * still carry that older dependency row, and refusing to recognise it would
+ * strand the user on the fallback data directory for no reason.
+ *
+ * Spelling the current name here as a literal is what previously broke the
+ * lookup: the profile declares `dsh-multibuddy-connect`, the literal said
+ * `dsh-workbuddy-connect`, and the plugin quietly wrote its credentials under
+ * `$DSH_HOME` instead of into the profile.
+ */
+const PLUGIN_PACKAGE_NAMES: readonly string[] = [
+  PLUGIN_PACKAGE_NAME,
+  'dsh-workbuddy-connect',
+]
 
 function pluginPackageRoot(): string | undefined {
   try {
@@ -64,8 +81,9 @@ function profileDeclaresPlugin(profileDir: string): boolean {
       dependencies?: Record<string, unknown>
       devDependencies?: Record<string, unknown>
     }
-    return typeof manifest.dependencies?.[PLUGIN_PACKAGE_NAME] === 'string'
-      || typeof manifest.devDependencies?.[PLUGIN_PACKAGE_NAME] === 'string'
+    return PLUGIN_PACKAGE_NAMES.some(name =>
+      typeof manifest.dependencies?.[name] === 'string'
+      || typeof manifest.devDependencies?.[name] === 'string')
   } catch {
     // Not a profile, or unreadable: it simply is not a candidate.
     return false

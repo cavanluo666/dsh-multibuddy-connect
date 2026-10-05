@@ -16,6 +16,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { workbuddyStateDir } from './paths.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { PLUGIN_PACKAGE_NAME } from './plugin-name.ts'
 
 /** Basename of the host heartbeat file inside the plugin's config directory. */
 export const WORKBUDDY_HOST_HEARTBEAT_FILENAME = '.workbuddy-host-heartbeat.json'
@@ -26,7 +27,15 @@ const HEARTBEAT_FORMAT_VERSION = 1
 /** On-disk shape of the heartbeat. */
 export interface WorkBuddyHostHeartbeat {
   version: typeof HEARTBEAT_FORMAT_VERSION
-  package: 'dsh-workbuddy-connect'
+  /**
+   * Which package wrote this heartbeat.
+   *
+   * Typed as a plain string rather than the constant's literal type: the file
+   * is read back from disk, so the value is untrusted input until the reader
+   * compares it against {@link PLUGIN_PACKAGE_NAME}. Declaring the narrowest
+   * type here would assert something about a file this module did not write.
+   */
+  package: string
   pluginVersion: string
   /** Epoch milliseconds when the host registered the provider. */
   registeredAt: number
@@ -47,7 +56,7 @@ export function workbuddyHostHeartbeatPath(): string {
 export async function writeHostHeartbeat(): Promise<void> {
   const document: WorkBuddyHostHeartbeat = {
     version: HEARTBEAT_FORMAT_VERSION,
-    package: 'dsh-workbuddy-connect',
+    package: PLUGIN_PACKAGE_NAME,
     pluginVersion: WORKBUDDY_CONNECT_VERSION,
     registeredAt: Date.now(),
     pid: process.pid,
@@ -81,13 +90,13 @@ export async function readHostHeartbeat(): Promise<WorkBuddyHostHeartbeat | unde
     const parsed = JSON.parse(raw) as Partial<WorkBuddyHostHeartbeat>
     if (
       parsed.version === HEARTBEAT_FORMAT_VERSION
-      && parsed.package === 'dsh-workbuddy-connect'
+      && parsed.package === PLUGIN_PACKAGE_NAME
       && typeof parsed.registeredAt === 'number'
       && typeof parsed.pid === 'number'
     ) {
       return {
         version: HEARTBEAT_FORMAT_VERSION,
-        package: 'dsh-workbuddy-connect',
+        package: PLUGIN_PACKAGE_NAME,
         pluginVersion: typeof parsed.pluginVersion === 'string' ? parsed.pluginVersion : 'unknown',
         registeredAt: parsed.registeredAt,
         pid: parsed.pid,

@@ -13,6 +13,7 @@ import {
 } from '../src/host-heartbeat.ts'
 import { workbuddyStateDir, WORKBUDDY_DATA_DIR_ENV } from '../src/paths.ts'
 import { WORKBUDDY_CONNECT_VERSION } from '../src/version.ts'
+import { PLUGIN_PACKAGE_NAME } from '../src/plugin-name.ts'
 
 let root: string | undefined
 
@@ -35,7 +36,10 @@ describe('host heartbeat', () => {
     // After write: present and well-formed.
     const heartbeat = await readHostHeartbeat()
     expect(heartbeat).toBeDefined()
-    expect(heartbeat!.package).toBe('dsh-workbuddy-connect')
+    // Asserted against the single source of truth rather than a literal: the
+    // package was renamed once already, and a test spelling the old name is
+    // what would keep the rename from being complete.
+    expect(heartbeat!.package).toBe(PLUGIN_PACKAGE_NAME)
     expect(heartbeat!.pid).toBe(process.pid)
     expect(typeof heartbeat!.registeredAt).toBe('number')
     expect(heartbeat!.pluginVersion).toBe(WORKBUDDY_CONNECT_VERSION)
@@ -72,7 +76,7 @@ describe('host heartbeat', () => {
     // A heartbeat registered *before* this process began (the recycled-PID case).
     const recycled = {
       version: 1 as const,
-      package: 'dsh-workbuddy-connect' as const,
+      package: PLUGIN_PACKAGE_NAME,
       pluginVersion: '0.0.0-test',
       registeredAt: (startAtMs as number) - 60_000, // 1 min before this process started
       pid: process.pid,
@@ -99,7 +103,7 @@ describe('host heartbeat', () => {
     await mkdir(workbuddyStateDir(), { recursive: true })
     await writeFile(
       workbuddyHostHeartbeatPath(),
-      JSON.stringify({ version: 99, package: 'dsh-workbuddy-connect', registeredAt: Date.now(), pid: process.pid }),
+      JSON.stringify({ version: 99, package: PLUGIN_PACKAGE_NAME, registeredAt: Date.now(), pid: process.pid }),
       'utf8',
     )
     expect(await readHostHeartbeat()).toBeUndefined()
