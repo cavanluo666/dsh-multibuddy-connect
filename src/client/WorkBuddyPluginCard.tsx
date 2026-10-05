@@ -225,6 +225,8 @@ const cardBodyStyle: CSSProperties = {
 
 const bodyStyle: CSSProperties = { margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' }
 const rowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }
+/** A vertical stack, for content that sits BELOW a row rather than inside it. */
+const stackStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }
 const statusStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 500, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary)' }
 /** The built-in secondary button: transparent, hairline border, 8px radius. */
 const buttonStyle: CSSProperties = {
@@ -2119,6 +2121,23 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
               {status?.status !== 'signed-in' || status.loginKey === undefined
                 ? null
                 : <>
+                    {/*
+                      * ADD an account, as opposed to SWITCHING to one.
+                      *
+                      * These are genuinely different actions and used to be
+                      * conflated: `switchAccount` signs the current account OUT
+                      * first, so it can only ever replace. Adding a second account
+                      * needs the plain sign-in flow, which the host already
+                      * appends to the pool.
+                      */}
+                    <button
+                      type="button"
+                      style={buttonStyle}
+                      disabled={busy || signIn !== undefined}
+                      onClick={() => { void beginSignIn() }}
+                    >
+                      {signIn === undefined ? t('addAccount') : t('addingAccount')}
+                    </button>
                     <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void switchAccount() }}>
                       {busy ? t('switchingAccount') : t('switchAccount')}
                     </button>
@@ -2127,6 +2146,23 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                     </button>
                   </>}
             </div>
+            {/*
+              * The in-progress sign-in, rendered for a SIGNED-IN card too.
+              *
+              * The link used to live only in the signed-out branch, which was
+              * correct while signing in could only ever replace the account. Now
+              * that "add account" starts a sign-in while the current account
+              * stays live, an attempt with no visible link would look like a
+              * button that does nothing.
+              */}
+            {status?.status !== 'signed-in' || signIn === undefined
+              ? null
+              : <div style={stackStyle}>
+                  <a href={signIn.url} target="_blank" rel="noopener noreferrer" style={bodyStyle}>
+                    {t('signInOpenAgain')}
+                  </a>
+                  <p style={bodyStyle}>{t('signInWaiting')}</p>
+                </div>}
             {/*
               * A failed read is reported beside the document still on screen,
               * never in place of it: blanking the card over one transient error
