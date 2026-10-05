@@ -5,7 +5,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
+import type { WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebPoolAccount, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import { QuotaSettingsContent } from './QuotaSettingsCard.tsx'
@@ -97,6 +97,17 @@ export type WorkBuddyPluginCardProps =
   & Partial<WorkBuddyPluginCardInjected>
 
 const POLL_INTERVAL_MS = 60_000
+
+/**
+ * How often the account pool's countdowns are recomputed.
+ *
+ * Deliberately NOT the poll interval above: the document is re-read once a
+ * minute, but "剩余 3 分 20 秒" has to fall every second to look like a clock
+ * rather than a stale figure, and a countdown that only moves on poll would sit
+ * unchanged for a minute and then jump. This tick re-renders local state only —
+ * it never touches the network.
+ */
+const POOL_TICK_MS = 1_000
 
 /*
  * Styling mirrors the Settings panel's own plugin card (`.YyYd_a_card` in the
@@ -326,6 +337,75 @@ const confirmBoxStyle: CSSProperties = {
   background: 'var(--dsw-alias-bg-layer-1)',
 }
 const confirmRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8 }
+
+/*
+ * Account-pool styles. Same tokens, radii, and type scale as the rows above:
+ * the pool is one more section of this card, not a widget of its own, and a
+ * reader should not be able to tell it was added later.
+ */
+
+/** One account: state dot, identity, then the counters on the right. */
+const poolRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 8,
+  padding: '8px 10px',
+  borderRadius: 8,
+  border: '.5px solid var(--dsw-alias-border-l4)',
+  background: 'var(--dsw-alias-bg-layer-3)',
+}
+
+/** Label, chips, and the state line, stacked so a long nickname cannot squeeze the state out. */
+const poolIdentityStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }
+
+const poolLabelStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
+
+const poolLabelTextStyle: CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.5,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-primary)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  maxWidth: 220,
+}
+
+const poolActiveChipStyle: CSSProperties = {
+  padding: '1px 8px',
+  borderRadius: 999,
+  fontSize: 11,
+  lineHeight: '18px',
+  background: 'var(--dsw-alias-brand-primary)',
+  color: 'var(--dsw-alias-label-primary-foreground)',
+}
+
+/**
+ * The alert chip. Border and text colour are spread in per tone, so this stays
+ * a neutral shell; a hardcoded red would ignore the theme's own error colour.
+ */
+const poolStateChipStyle: CSSProperties = {
+  padding: '1px 8px',
+  borderRadius: 999,
+  borderWidth: '1px',
+  borderStyle: 'solid',
+  borderColor: 'var(--dsw-alias-border-l2)',
+  fontSize: 11,
+  lineHeight: '18px',
+}
+
+/** Counters: right-aligned, tertiary, and never wider than the row's own label. */
+const poolMetaStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-end',
+  gap: 2,
+  flex: '0 0 auto',
+  fontSize: 12,
+  lineHeight: 1.5,
+  textAlign: 'right',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
 
 /** One probeable model's row: name on the left, state and action on the right. */
 const probeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }
@@ -1088,6 +1168,197 @@ function CheckInLogTable({
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * One account's line in the pool, plus the bits it needs from the clock.
+ *
+ * Split out of the section so the per-second tick re-renders only what the
+ * clock actually changes, and so the state wording, its colour, and the chips
+ * beside it stay in one place — three things that describe the same account and
+ * would otherwise be easy to let disagree.
+ */
+function PoolAccountRow({ account, now }: {
+  account: WorkBuddyWebPoolAccount
+  /** The ticked clock, in epoch ms; drives the countdown and nothing else. */
+  now: number
+}): React.ReactNode {
+  /*
+   * Cooldown is a *deadline*, so "cooling" is decided by comparing it with the
+   * clock rather than by trusting a flag: an account whose deadline has already
+   * passed (or that never had one, since the host sends 0) is available this
+   * instant, and saying otherwise would show a user a countdown to a moment
+   * that has already been and gone.
+   */
+  const remainingMs = account.cooldownUntilMs > now ? account.cooldownUntilMs - now : 0
+  const cooling = remainingMs > 0
+  const needsSignIn = account.needsSignIn === true
+  /*
+   * The red line is reserved for the one state the user must *act* on: a dead
+   * credential is not something the pool can route around, and a resting
+   * account is. Both are shown, but only one is asked for.
+   */
+  const tone = needsSignIn ? 'danger' : cooling ? 'warn' : 'ok'
+  const toneColor = tone === 'danger'
+    ? 'var(--dsw-alias-state-error-primary, #d92d20)'
+    : tone === 'warn'
+      ? 'var(--dsw-alias-state-warn-primary, #b8860b)'
+      : 'var(--dsw-alias-state-success-primary, #22a06b)'
+  return (
+    <div style={poolRowStyle}>
+      <span style={{ ...dotStyle(needsSignIn ? 'error' : 'signed-in'), background: toneColor }} aria-hidden="true" />
+      <span style={poolIdentityStyle}>
+        <span style={poolLabelStyle}>
+          <span style={poolLabelTextStyle}>{account.label}</span>
+          {account.active === true
+            ? <span style={poolActiveChipStyle}>{'当前活跃'}</span>
+            : null}
+          {needsSignIn ? <span style={{ ...poolStateChipStyle, color: toneColor, borderColor: toneColor }}>{'需重新登录'}</span> : null}
+        </span>
+        <span style={modelRateStyle}>
+          {poolAccountStateText(account, remainingMs, now)}
+        </span>
+      </span>
+      {/*
+       * The two counters share the right-hand column and are dropped entirely
+       * when there is nothing to count. Printing "累计限流 0 次" on a healthy
+       * account would turn the pool's quiet common case into a wall of
+       * zeroes, and the right-hand column is the first thing to go when the row
+       * is narrow.
+       */}
+      {account.rateLimitHits > 0 || account.lastSuccessAtMs !== undefined
+        ? <span style={poolMetaStyle}>
+            {account.rateLimitHits > 0
+              ? <span>{'累计限流 ' + String(account.rateLimitHits) + ' 次'}</span>
+              : null}
+            {account.lastSuccessAtMs === undefined
+              ? null
+              : <span>{'上次成功 ' + formatClockTime(account.lastSuccessAtMs)}</span>}
+          </span>
+        : null}
+    </div>
+  )
+}
+
+/**
+ * The account's state as a sentence, from the deadline already computed by the
+ * row. Cooldown reasons are the upstream's own failure classes, translated here
+ * because "soft_rate" tells a user nothing about what to do next; anything the
+ * plugin does not recognize passes through verbatim rather than being replaced
+ * by a vague "冷却中", which would hide the very diagnosis the host went to the
+ * trouble of forwarding.
+ */
+function poolAccountStateText(account: WorkBuddyWebPoolAccount, remainingMs: number, now: number): string {
+  if (account.needsSignIn === true) return '需重新登录'
+  if (remainingMs > 0) return '冷却中 · 剩余 ' + formatCountdown(remainingMs) + ' · ' + cooldownReasonText(account.cooldownReason)
+  // Available again, but the host has not re-polled yet: the row must say so
+  // instead of silently claiming the account is idle *and* never mentioning the
+  // failure that just expired.
+  if (account.cooldownUntilMs > 0 && account.cooldownUntilMs <= now) return '冷却已结束（' + cooldownReasonText(account.cooldownReason) + '），可再次使用'
+  return '可用'
+}
+
+/** One upstream failure class in words a user can act on. Unknown classes pass through. */
+function cooldownReasonText(reason: string | undefined): string {
+  if (reason === 'soft_rate') return '触发限流'
+  if (reason === 'hard_credit') return '额度耗尽'
+  if (reason === 'session_dead') return '登录已失效'
+  if (reason === undefined || reason === '') return '原因未知'
+  return reason
+}
+
+/**
+ * Remaining cooldown as 分/秒. Rounded up, so a deadline 900 ms away reads as
+ * "1 秒" rather than "0 秒" — a row that says zero seconds while still being
+ * treated as cooling is a contradiction the user would have to resolve.
+ */
+function formatCountdown(remainingMs: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(remainingMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? String(minutes) + ' 分 ' + String(seconds) + ' 秒' : String(seconds) + ' 秒'
+}
+
+/**
+ * HH:MM in the *viewer's* zone, zero-padded by hand.
+ *
+ * Not `toLocaleString`: the harness pins the locale, so a locale-formatted
+ * clock can disagree with the wall clock the user is looking at. Only the hour
+ * and minute are printed — this is a "how recently did this account work" hint,
+ * not an audit trail, and the date is already implied by the row's presence.
+ */
+function formatClockTime(ms: number): string {
+  const date = new Date(ms)
+  return pad2(date.getHours()) + ':' + pad2(date.getMinutes())
+}
+
+function pad2(value: number): string {
+  return value < 10 ? '0' + String(value) : String(value)
+}
+
+/**
+ * The account pool: which sign-ins share this variant's traffic, and which of
+ * them is resting.
+ *
+ * Why this section exists at all, given that pooling is meant to be invisible:
+ * the model picker deliberately shows ONE group per variant, so nothing else in
+ * the UI admits that several accounts are in play. That is the right call while
+ * the pool is healthy — a user should not have to care which login served a
+ * request — but it leaves the two states that DO concern them unobservable: an
+ * account that has quietly exhausted its quota, and one whose credential has
+ * died and will need a fresh sign-in. Since the pool routes around both, the
+ * symptom without this section is a silent quality drop (and, at the end of the
+ * pool, requests that fail with no explanation of which login ran out). So the
+ * pool stays transparent in routing and becomes *visible* in status: nothing
+ * here is actionable except the sign-in prompt, and everything else is there so
+ * "why did this get slower" has an answer on screen.
+ *
+ * The section renders NOTHING when the host sends no `pool`: a single-account
+ * variant is not a pool of one, and a lone row would advertise pooling to users
+ * who do not have it. An empty `accounts` array is treated the same way — the
+ * host sends no pool at all in that case, and a bare heading over a blank list
+ * is worse than no section.
+ */
+function PoolSection({ pool }: {
+  pool: WorkBuddyWebPool
+}): React.ReactNode {
+  /*
+   * A local clock, ticked once a second, so the countdowns move without
+   * re-fetching the status document.
+   *
+   * The document is the source of truth for every *deadline*; the only thing
+   * that changes between two documents is what time it is now. Re-fetching to
+   * get a countdown would spend a request per second to learn nothing new, so
+   * the tick is deliberately confined to this state and nothing else in the
+   * card re-renders off it.
+   */
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    /*
+     * Nothing in the pool is cooling, so there is no countdown to advance and
+     * no reason to wake the browser (or re-render) once a second. The effect
+     * re-runs whenever the document lands and re-decides.
+     */
+    const cooling = pool.accounts.some(account => account.cooldownUntilMs > Date.now())
+    if (!cooling) return
+    const timer = window.setInterval(() => { setNow(Date.now()) }, POOL_TICK_MS)
+    return () => { window.clearInterval(timer) }
+  }, [pool])
+  if (pool.accounts.length === 0) return null
+  return (
+    <div style={quotaListStyle}>
+      <div style={rowStyle}>
+        <h3 style={quotaTitleStyle}>{'账号池'}</h3>
+        <span style={bodyStyle}>{'共 ' + String(pool.accounts.length) + ' 个账号，' + String(pool.available) + ' 个可用'}</span>
+      </div>
+      <p style={descriptionStyle}>{'以下账号会自动轮换，请求时使用其中可用的一个；当前没有可免登录恢复的账号时才需要处理。'}</p>
+      <div style={quotaGroupStyle}>
+        {pool.accounts.map(account => (
+          <PoolAccountRow key={account.id} account={account} now={now} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -1958,6 +2229,14 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                       ) : null}
                       {status.creditsError === undefined ? null
                         : <p style={errorStyle}>{t('creditsError', { message: status.creditsError })}</p>}
+                      {/*
+                        * The pool sits between the credit figure and the
+                        * detection tools: it explains the one number directly
+                        * above it. A total that stopped growing is usually the
+                        * pool resting an account, and the reader wants that
+                        * answer before the reference material below.
+                        */}
+                      {status.pool === undefined ? null : <PoolSection pool={status.pool} />}
                       {status.probe === undefined ? null : (
                         <ProbeSection
                           probe={status.probe}

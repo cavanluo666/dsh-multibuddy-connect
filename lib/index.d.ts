@@ -989,6 +989,127 @@ declare class WorkBuddyProbeStore {
   private persist;
 }
 //#endregion
+//#region src/pool.d.ts
+/** One account's pool bookkeeping, as persisted. */
+interface PooledAccountRecord {
+  /** Stable identity (`uid:enterpriseId`); the merge key across restarts. */
+  id: string;
+  /** Human label shown in the card. */
+  label: string;
+  /** Where this account's credential file lives. */
+  path: string;
+  /** Period during which this account is skipped, epoch ms (0 = available). */
+  cooldownUntilMs: number;
+  /** Why it is cooling, for the card. */
+  cooldownReason?: string;
+  /** Consecutive rate-limit hits, driving the backoff. */
+  rateLimitHits: number;
+  /** Set when the credential needs a fresh sign-in before it can be used. */
+  needsSignIn?: boolean;
+  /** Last time this account served a request successfully, epoch ms. */
+  lastSuccessAtMs?: number;
+}
+/**
+ * Where one account's credential lives.
+ *
+ * Derived from the pool's base file name so the FIRST account keeps the
+ * historical path exactly: an existing single-account install must keep reading
+ * the file it already wrote, or the upgrade would look like a sign-out.
+ *
+ * @param baseFilename - the variant's own credential filename.
+ * @param slot - 0 for the original file, 1+ for added accounts.
+ * @returns the absolute path for that slot.
+ */
+declare function poolAccountPath(baseFilename: string, slot: number): string;
+/** The pool's own bookkeeping file, beside the credentials it tracks. */
+declare function poolStatePath(baseFilename: string): string;
+/**
+ * Whether a failure class means \"try another account\".
+ *
+ * The three that do are per-account conditions. Everything else is a property
+ * of the REQUEST or the SERVICE, so walking the pool would repeat one failure N
+ * times and delay the error the user needs to see.
+ *
+ * @param kind - the classified upstream failure.
+ * @returns true when another account may succeed.
+ */
+declare function isAccountScoped(kind: UpstreamErrorKind): boolean;
+/**
+ * The cooldown for one failure, given how many times this account has already
+ * been rate-limited in a row.
+ *
+ * Exponential with a ceiling: the first throttle costs a minute, and an account
+ * that keeps being throttled is parked progressively longer instead of being
+ * retried every minute forever.
+ *
+ * @param kind - the failure class.
+ * @param rateLimitHits - consecutive rate-limit hits, including this one.
+ * @returns how long to park the account, in milliseconds.
+ */
+declare function cooldownMsFor(kind: UpstreamErrorKind, rateLimitHits: number): number;
+/**
+ * The pool's live state for one product variant.
+ *
+ * Credential STORAGE is not this class's business — the caller supplies the
+ * stores, one per account, because only the shell knows how to build them (they
+ * need the variant and the refresh function). The pool owns selection, cooldown
+ * accounting, and persistence of the bookkeeping beside those credentials.
+ */
+declare class WorkBuddyAccountPool {
+  private readonly baseFilename;
+  private records;
+  private activeId;
+  private loaded;
+  private dirty;
+  constructor(baseFilename: string);
+  /** Read the pool file once; a missing or unreadable file starts empty. */
+  load(): Promise<void>;
+  /** Every tracked account, in stable order. */
+  all(): readonly PooledAccountRecord[];
+  /** The account the pool prefers, when it is usable. */
+  active(): PooledAccountRecord | undefined;
+  /**
+   * Record one account, merging with what is already known.
+   *
+   * Cooldown state is CARRIED OVER rather than reset: a discovery pass runs on
+   * every catalog refresh, and letting it clear a cooldown would put a
+   * throttled account straight back into rotation.
+   *
+   * @param record - the account's identity and location.
+   */
+  upsert(record: Omit<PooledAccountRecord, 'cooldownUntilMs' | 'rateLimitHits'> & Partial<PooledAccountRecord>): void;
+  /** Drop one account; a no-op when the id is unknown. */
+  remove(id: string): void;
+  /** Mark which account the pool should prefer. */
+  setActive(id: string): void;
+  /**
+   * Accounts that may serve a request right now, best first.
+   *
+   * The active account leads so a healthy preference is honoured, and the rest
+   * follow in insertion order — which is the order the user signed them in, and
+   * therefore the order they would expect.
+   *
+   * @param now - current time; injected so tests need no clock.
+   * @returns the usable accounts, in the order they should be tried.
+   */
+  available(now: number): readonly PooledAccountRecord[];
+  /**
+   * Apply one request outcome to an account.
+   *
+   * Success CLEARS the rate-limit streak: the counter exists to lengthen the
+   * backoff of an account that keeps failing, so an account that just worked
+   * must start from the short cooldown again.
+   *
+   * @param id - the account that served the attempt.
+   * @param outcome - the classified result, or \`ok\` for a success.
+   * @param now - current time.
+   * @returns the account's state after the update.
+   */
+  report(id: string, outcome: UpstreamErrorKind | 'ok', now: number): PooledAccountRecord | undefined;
+  /** Persist the bookkeeping, when anything changed. */
+  flush(): Promise<void>;
+}
+//#endregion
 //#region src/shim.d.ts
 /** Minimal logger surface the plugin context already provides. */
 interface ShimLogger {
@@ -1013,7 +1134,31 @@ interface WorkBuddyShim {
 }
 /** Constructor dependencies. */
 interface WorkBuddyShimOptions {
+  /**
+   * The account in effect.
+   *
+   * Used when no pool is supplied — the single-account case, and the one every
+   * existing test exercises. With a pool, each account's credential is resolved
+   * through {@link resolveAccount} instead.
+   */
   store: WorkBuddyCredentialStore;
+  /**
+   * The account set, when this variant has more than one sign-in.
+   *
+   * Absent means "no failover": the request goes to {@link store} exactly as it
+   * always did, which keeps a single-account install on the identical path and
+   * makes the pool an addition rather than a replacement.
+   */
+  accountPool?: WorkBuddyAccountPool;
+  /**
+   * Resolve one pool account's credential.
+   *
+   * Supplied by the shell because only it can turn a pool record (a path) into a
+   * credential.
+   */
+  resolveAccount?: (id: string) => Promise<WorkBuddyCredential>;
+  /** Record one attempt so the pool can cool a failing account down. */
+  onAccountOutcome?: (id: string, outcome: UpstreamErrorKind | 'ok') => void;
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
@@ -1191,6 +1336,152 @@ declare class WorkBuddyProbeService {
    */
   probe(modelId: string, manualConsent?: boolean): Promise<WorkBuddyProbeStatus>;
 }
+//#endregion
+//#region src/account-manager.d.ts
+/** How one credential store is built; supplied by the shell. */
+interface AccountManagerOptions {
+  /** The variant these accounts belong to. */
+  variant: WorkBuddyVariant;
+  /**
+   * Performs the upstream token refresh, shared by every account.
+   *
+   * One refresher for the whole pool: it takes the credential as an argument, so
+   * nothing about it is per-account.
+   */
+  refresh: WorkBuddyStoreOptions['refresh'];
+}
+/** One account: its pool bookkeeping plus the store that holds its credential. */
+interface PooledAccount {
+  record: PooledAccountRecord;
+  store: WorkBuddyCredentialStore;
+}
+/**
+ * The account set for one variant.
+ *
+ * Not a \`WorkBuddyCredentialStore\` subclass: the shell needs BOTH faces — the
+ * pool (for failover and the card) and a store-shaped object (for the twelve
+ * existing call sites) — and composition is how both can exist without either
+ * pretending to be the other.
+ */
+declare class WorkBuddyAccountManager {
+  private readonly options;
+  private readonly pool;
+  private readonly accounts;
+  private loaded;
+  constructor(options: AccountManagerOptions);
+  /** The pool, for failover and the configuration card. */
+  accountPool(): WorkBuddyAccountPool;
+  /** Build a store for one slot, pointed at that slot's credential file. */
+  private storeFor;
+  /**
+   * Discover the accounts already on disk and register them with the pool.
+   *
+   * Slots are probed in order until one is missing. Contiguous numbering is
+   * what makes removal safe: slot N+1 is only ever read after slot N, so a gap
+   * left by a deletion means the later slots are renumbered on the next
+   * add rather than read at a stale position.
+   *
+   * @returns the accounts now known, in slot order.
+   */
+  load(): Promise<readonly PooledAccount[]>;
+  /** Every known account, in slot order. */
+  all(): readonly PooledAccount[];
+  /** Look one up by pool id. */
+  get(id: string): PooledAccount | undefined;
+  /**
+   * The store the rest of the plugin should treat as \"the account\".
+   *
+   * Falls back to slot 0's store when no account has been discovered yet, so a
+   * fresh install still has something to sign in to.
+   */
+  activeStore(): WorkBuddyCredentialStore;
+  /**
+   * Add a fresh sign-in, or refresh an existing one.
+   *
+   * Keyed by IDENTITY, not by slot: signing the same account in again must
+   * update it in place rather than create a duplicate that shares its quota.
+   *
+   * @param credential - the credential the sign-in produced.
+   * @returns the account it belongs to.
+   */
+  add(credential: WorkBuddyCredential): Promise<PooledAccount>;
+  /**
+   * Forget one account and delete its credential file.
+   *
+   * @param id - the pool id to remove.
+   */
+  remove(id: string): Promise<void>;
+  /** Persist pool bookkeeping; safe to call on every request outcome. */
+  flush(): Promise<void>;
+  /** Which slot an existing account occupies, by comparing file paths. */
+  private storeForSlotOf;
+  /** The next free slot: one past the highest occupied. */
+  private nextSlot;
+}
+/**
+ * The stable identity of one account, matching the shell's own identity key.
+ *
+ * uid plus enterpriseId, because one person can belong to several enterprises
+ * and each is a separately billed account.
+ *
+ * @param credential - the credential.
+ * @returns the identity string.
+ */
+declare function identityOf(credential: Pick<WorkBuddyCredential, 'uid' | 'enterpriseId'>): string;
+//#endregion
+//#region src/pool-failover.d.ts
+/** What one attempt produced, in the vocabulary the pool understands. */
+type AttemptOutcome<T> = {
+  ok: true;
+  value: T;
+} | {
+  ok: false;
+  kind: UpstreamErrorKind;
+  message: string;
+  status: number;
+};
+/** The result of walking the pool. */
+interface FailoverResult<T> {
+  /** The successful value, when some account served the request. */
+  value?: T;
+  /** Every account that was tried, in order. */
+  tried: readonly string[];
+  /** The last failure, when nothing succeeded. */
+  failure?: {
+    kind: UpstreamErrorKind;
+    message: string;
+    status: number;
+    accountId: string;
+  };
+}
+/** Constructor options. */
+interface FailoverOptions<T> {
+  /** The pool supplying candidates. */
+  pool: WorkBuddyAccountPool;
+  /**
+   * Perform the request against one account.
+   *
+   * Must not throw for an upstream failure — it reports one through
+   * {@link AttemptOutcome}. A THROWN error is treated as fatal and propagates,
+   * because a caller that throws is describing a programmer error or a local
+   * fault (a missing file, a bad argument), not an account condition.
+   */
+  attempt: (record: PooledAccountRecord) => Promise<AttemptOutcome<T>>;
+  /** Injected clock, so tests need no timers. */
+  now?: () => number;
+  /**
+   * Called after each attempt with its outcome, for logging or diagnostics.
+   * Never allowed to break the walk.
+   */
+  onAttempt?: (record: PooledAccountRecord, outcome: AttemptOutcome<T>) => void;
+}
+/**
+ * Try each available account until one succeeds.
+ *
+ * @param options - the pool and the attempt callback.
+ * @returns the first success, or the last failure with the accounts tried.
+ */
+declare function withFailover<T>(options: FailoverOptions<T>): Promise<FailoverResult<T>>;
 //#endregion
 //#region src/backends/types.d.ts
 /**
@@ -2817,4 +3108,4 @@ declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaAI", 
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_SECTION_KEYS, AI_VARIANT, type AppVersionInfo, BACKEND_ENTRIES, type BackendAccount, BackendAccountRegistry, type BackendAdapter, type BackendAuthKind, type BackendAvailability, type BackendBrand, type BackendDescriptor, type BackendEntry, type BackendId, type BackendImpl, type BackendLoadFailure, type BackendLoadResult, type BackendModelInfo, type BackendQuota, BackendUnavailable, BaseBackendAdapter, CLINE_DESCRIPTOR, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, COMMANDCODE_DESCRIPTOR, type ChatIdentity, Config, DEFAULT_WINDOW_DAYS, type DiscoveredAccount, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, LOGIN_PENDING_CODE, LOOMY_DESCRIPTOR, type LedgerRow, MIMO_DESCRIPTOR, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type QuotaPackage, type QuotaReading, type ResolveChatIdentityOptions, type SeedAccount, type StoredAccount, type TokenBuckets, USAGE_WINDOW_CHOICES, type UpstreamErrorKind, type UsageAccountInput, type UsageAccountRow, type UsageBackendTotal, type UsageDayPoint, UsageLedger, type UsageRouteOptions, UsageService, type UsageServiceOptions, type UsageSummary, type UsageWebAccount, type UsageWebAction, type UsageWebActionResult, type UsageWebBackendTotal, type UsageWebDay, type UsageWebDocument, type UsageWebQuota, type UsageWebTokens, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_USAGE_ACTION_PATH, WORKBUDDY_USAGE_PATH, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, backendAccountsPath, buildUsageSummary, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createClineBackend, createCommandCodeBackend, createLoginKey, createLoomyBackend, createMiMoBackend, createRegistry, createUsageKey, createWorkBuddyAdapter, createWorkBuddyShim, dailySeries, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, loadBackends, localDay, maskSecret, messageOf, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseUsageAction, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerUsageRoute, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, seedsFor, totalTokens, usageDocumentHandler, usageLedgerPath, validAppVersion, validCliVersion, variantFor, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
+export { AI_SECTION_KEYS, AI_VARIANT, type AccountManagerOptions, type AppVersionInfo, type AttemptOutcome, BACKEND_ENTRIES, type BackendAccount, BackendAccountRegistry, type BackendAdapter, type BackendAuthKind, type BackendAvailability, type BackendBrand, type BackendDescriptor, type BackendEntry, type BackendId, type BackendImpl, type BackendLoadFailure, type BackendLoadResult, type BackendModelInfo, type BackendQuota, BackendUnavailable, BaseBackendAdapter, CLINE_DESCRIPTOR, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, COMMANDCODE_DESCRIPTOR, type ChatIdentity, Config, DEFAULT_WINDOW_DAYS, type DiscoveredAccount, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, type FailoverOptions, type FailoverResult, LOGIN_PENDING_CODE, LOOMY_DESCRIPTOR, type LedgerRow, MIMO_DESCRIPTOR, PROBE_EFFORT_CANDIDATES, type PooledAccount, type PooledAccountRecord, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type QuotaPackage, type QuotaReading, type ResolveChatIdentityOptions, type SeedAccount, type StoredAccount, type TokenBuckets, USAGE_WINDOW_CHOICES, type UpstreamErrorKind, type UsageAccountInput, type UsageAccountRow, type UsageBackendTotal, type UsageDayPoint, UsageLedger, type UsageRouteOptions, UsageService, type UsageServiceOptions, type UsageSummary, type UsageWebAccount, type UsageWebAction, type UsageWebActionResult, type UsageWebBackendTotal, type UsageWebDay, type UsageWebDocument, type UsageWebQuota, type UsageWebTokens, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_USAGE_ACTION_PATH, WORKBUDDY_USAGE_PATH, WORKBUDDY_VARIANTS, WorkBuddyAccountManager, WorkBuddyAccountPool, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, backendAccountsPath, buildUsageSummary, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, cooldownMsFor, createClineBackend, createCommandCodeBackend, createLoginKey, createLoomyBackend, createMiMoBackend, createRegistry, createUsageKey, createWorkBuddyAdapter, createWorkBuddyShim, dailySeries, fallbackChatIdentity, fingerprintModel, identityOf, inject, installedAppVersion, isAccountScoped, isHeartbeatProcessAlive, loadBackends, localDay, maskSecret, messageOf, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseUsageAction, parseWorkBuddyAuth, poolAccountPath, poolStatePath, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerUsageRoute, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, seedsFor, totalTokens, usageDocumentHandler, usageLedgerPath, validAppVersion, validCliVersion, variantFor, withFailover, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };

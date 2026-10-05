@@ -22,6 +22,9 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { withFailover, type AttemptOutcome } from './pool-failover.ts'
+import type { WorkBuddyAccountPool } from './pool.ts'
+import type { WorkBuddyCredential } from './auth.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -48,7 +51,31 @@ export interface WorkBuddyShim {
 
 /** Constructor dependencies. */
 export interface WorkBuddyShimOptions {
+  /**
+   * The account in effect.
+   *
+   * Used when no pool is supplied — the single-account case, and the one every
+   * existing test exercises. With a pool, each account's credential is resolved
+   * through {@link resolveAccount} instead.
+   */
   store: WorkBuddyCredentialStore
+  /**
+   * The account set, when this variant has more than one sign-in.
+   *
+   * Absent means "no failover": the request goes to {@link store} exactly as it
+   * always did, which keeps a single-account install on the identical path and
+   * makes the pool an addition rather than a replacement.
+   */
+  accountPool?: WorkBuddyAccountPool
+  /**
+   * Resolve one pool account's credential.
+   *
+   * Supplied by the shell because only it can turn a pool record (a path) into a
+   * credential.
+   */
+  resolveAccount?: (id: string) => Promise<WorkBuddyCredential>
+  /** Record one attempt so the pool can cool a failing account down. */
+  onAccountOutcome?: (id: string, outcome: UpstreamErrorKind | 'ok') => void
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
@@ -229,25 +256,88 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     }
   }
 
+  /**
+   * Send one prepared chat body, failing over across the account pool.
+   *
+   * WHY THIS IS NOT JUST `store.resolve()`. With one account the answer is that
+   * account; with several it is whichever one is not throttled, and a request
+   * that hits a rate limit must be retried on the next rather than surfaced.
+   * The decision of WHEN to retry lives in `withFailover`; all this does is
+   * supply it the per-account attempt.
+   *
+   * A POOL-LESS VARIANT STAYS ON THE OLD PATH. When no pool is supplied the
+   * resolve-and-send happens exactly as before, so a single-account install
+   * cannot be affected by any of this.
+   *
+   * @param prepared - the request body, already translated for the upstream.
+   * @param signal - aborted when the caller disconnects.
+   * @returns the upstream result, or undefined when no account could be resolved.
+   */
+  async function sendWithFailover(
+    prepared: ReturnType<typeof prepareChatBody>,
+    signal: AbortSignal,
+  ): Promise<Awaited<ReturnType<Pick<WorkBuddyUpstreamClient, 'chatStream'>['chatStream']>> | undefined> {
+    const pool = options.accountPool
+    if (pool === undefined) {
+      let credential
+      try {
+        credential = await store.resolve()
+      } catch {
+        return undefined
+      }
+      return client.chatStream(credential, prepared, signal)
+    }
+
+    const resolveAccount = options.resolveAccount
+    if (resolveAccount === undefined) {
+      // A pool with no way to resolve its accounts is a wiring mistake, and
+      // falling back to the single store would silently ignore the pool.
+      throw new Error('dsh-workbuddy-connect: a shim was given an account pool without an account resolver')
+    }
+
+    const result = await withFailover({
+      pool,
+      attempt: async (record): Promise<AttemptOutcome<Awaited<ReturnType<Pick<WorkBuddyUpstreamClient, 'chatStream'>['chatStream']>>>> => {
+        let credential: WorkBuddyCredential
+        try {
+          credential = await resolveAccount(record.id)
+        } catch (error: unknown) {
+          // An account whose credential cannot be read is unusable, and the
+          // pool should move on. Reporting it as a dead SESSION is what parks it
+          // until the user signs in again, which is exactly the remedy.
+          return { ok: false, kind: 'session_dead', status: 401, message: String(error) }
+        }
+        const outcome = await client.chatStream(credential, prepared, signal)
+        return outcome.ok
+          ? { ok: true, value: outcome }
+          : { ok: false, kind: outcome.kind, status: outcome.status, message: outcome.message }
+      },
+      onAttempt: (record, outcome) => {
+        options.onAccountOutcome?.(record.id, outcome.ok ? 'ok' : outcome.kind)
+      },
+    })
+
+    return result.value
+  }
+
   async function chatCompletions(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!isJsonContentType(req)) {
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
       return
     }
-    let credential
-    try {
-      credential = await store.resolve()
-    } catch (error: unknown) {
-      writeOpenAIError(res, 401, 'not_signed_in', String(error))
-      return
-    }
-
     const raw = (await readBody(req)).toString('utf8')
     const prepared = prepareChatBody(raw)
 
     const controller = new AbortController()
     req.on('close', () => controller.abort())
-    const result = await client.chatStream(credential, prepared, controller.signal)
+
+    const result = await sendWithFailover(prepared, controller.signal)
+
+    if (result === undefined) {
+      writeOpenAIError(res, 401, 'not_signed_in',
+        'workbuddy: no usable account; sign in from the plugin\'s settings card')
+      return
+    }
 
     if (!result.ok) {
       if (result.kind === 'activation_required') {

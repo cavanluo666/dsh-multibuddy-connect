@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -48,6 +48,13 @@ export interface WorkBuddyStatusRouteOptions {
   useMaximumContextWindow?: () => boolean
   /** Read the list of disabled model IDs for this variant. */
   disabledModels?: () => readonly string[]
+  /**
+   * The account pool's health for the card.
+   *
+   * Optional so the status route keeps working in tests and headless profiles,
+   * and so a single-account install simply reports no pool.
+   */
+  pool?: () => WorkBuddyWebPool | undefined
   /**
    * Whether the upstream has reported an unactivated trial for this variant.
    * Optional so the route keeps working without a shim.
@@ -122,6 +129,10 @@ export async function workBuddyWebStatus(
       ...deps.loginKey === undefined ? {} : { loginKey: deps.loginKey },
     }
   }
+  // Read once into a local: testing `deps.pool?.()` and then calling it again
+  // leaves the second call's type as `T | undefined`, so the spread widens the
+  // whole document and the union stops narrowing.
+  const pool = deps.pool?.()
   const status: WorkBuddyWebStatus = {
     status: 'signed-in',
     ...authStatus.nickname === undefined ? {} : { nickname: authStatus.nickname },
@@ -131,6 +142,7 @@ export async function workBuddyWebStatus(
     // Both arms carry the key: a signed-in card needs it for sign-out and for
     // switching accounts, and omitting it here made both actions unreachable.
     ...deps.loginKey === undefined ? {} : { loginKey: deps.loginKey },
+    ...pool === undefined ? {} : { pool },
   }
   // Model facts ride the signed-in document so the card can show rates,
   // promos, and context capacity without touching the Models picker. The rate

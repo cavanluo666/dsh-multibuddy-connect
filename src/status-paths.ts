@@ -244,6 +244,42 @@ export interface WorkBuddyWebModelBadge {
   maxInputTokens?: number
 }
 
+/**
+ * One account in the pool, as the card displays it.
+ *
+ * Deliberately NO credential material: the card needs to explain the pool's
+ * health, and a token would add nothing it could not get from the store anyway.
+ */
+export interface WorkBuddyWebPoolAccount {
+  id: string
+  label: string
+  /** Whether the pool prefers this account. */
+  active: boolean
+  /** Epoch ms until which it is skipped (0 = available now). */
+  cooldownUntilMs: number
+  /** Why it is cooling: an upstream failure class. */
+  cooldownReason?: string
+  /** Consecutive rate-limit hits, driving the backoff. */
+  rateLimitHits: number
+  /** Set when the credential needs a fresh sign-in before it can be used. */
+  needsSignIn?: boolean
+  /** Last successful request, epoch ms. */
+  lastSuccessAtMs?: number
+}
+
+/**
+ * The account pool's state for one variant.
+ *
+ * Absent when the variant has no pool (an older host, or a test), which the card
+ * renders as "no pool" rather than as an empty one — the two look identical to a
+ * user and mean different things.
+ */
+export interface WorkBuddyWebPool {
+  accounts: readonly WorkBuddyWebPoolAccount[]
+  /** How many accounts can serve a request right now. */
+  available: number
+}
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebStatus =
   | {
@@ -281,6 +317,14 @@ export type WorkBuddyWebStatus =
      * with the document for the same reason `probeKey` does.
      */
     loginKey?: string
+    /**
+     * The account pool's health, when this variant holds more than one sign-in.
+     *
+     * The model picker still shows ONE group per variant — that is the point of
+     * pooling — so this is the only place a user can see that several accounts
+     * are sharing the load, and which of them is resting.
+     */
+    pool?: WorkBuddyWebPool
     /**
      * Daily check-in status record for this variant.
      */

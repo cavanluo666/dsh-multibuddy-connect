@@ -18,6 +18,7 @@ import z from '@deepseek-ai/schemastery'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyCredentialStore, WORKBUDDY_CREDENTIAL_SOURCE, type WorkBuddyCredential } from './auth.ts'
+import { WorkBuddyAccountManager } from './account-manager.ts'
 import { WorkBuddyLoginClient, resolveLoginRegion, type WorkBuddyLoginAttempt } from './login.ts'
 import { registerWorkBuddyLoginRoute } from './login-route.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
@@ -26,7 +27,7 @@ import { createWorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyProbeService } from './probe-service.ts'
 import { newestFirst, WorkBuddyProbeStore, workbuddyProbePath } from './probe-store.ts'
-import { WorkBuddyUpstreamClient } from './upstream.ts'
+import { WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import { createLoginKey } from './login-route.ts'
@@ -88,6 +89,32 @@ export {
   WORKBUDDY_VARIANTS,
   type WorkBuddyVariant,
 } from './variants.ts'
+
+// ---- Multi-account pool ---------------------------------------------------
+//
+// Exported so a consumer can drive the pool without the whole plugin: the
+// diagnostics path, the tests, and any sibling tool that wants to report pool
+// health.
+export {
+  WorkBuddyAccountManager,
+  identityOf,
+  type AccountManagerOptions,
+  type PooledAccount,
+} from './account-manager.ts'
+export {
+  cooldownMsFor,
+  isAccountScoped,
+  poolAccountPath,
+  poolStatePath,
+  WorkBuddyAccountPool,
+  type PooledAccountRecord,
+} from './pool.ts'
+export {
+  withFailover,
+  type AttemptOutcome,
+  type FailoverOptions,
+  type FailoverResult,
+} from './pool-failover.ts'
 
 // ---- Merged third-party backends and the usage dashboard ------------------
 //
@@ -605,7 +632,21 @@ function pickFields<K extends keyof Config>(
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
 interface VariantRuntime {
   variant: WorkBuddyVariant
-  store: WorkBuddyCredentialStore
+  /**
+   * The account set for this variant: several sign-ins of the SAME product,
+   * with automatic failover when one is throttled.
+   */
+  accounts: WorkBuddyAccountManager
+  /**
+   * The account currently in effect.
+   *
+   * A GETTER rather than a field, and that is the whole compatibility story:
+   * twelve call sites already ask `runtime.store` for "the account", and every
+   * one of them keeps working unchanged while the pool decides which account
+   * that is. A field would have to be reassigned on every switch, and any
+   * closure that captured it would keep serving the old account.
+   */
+  readonly store: WorkBuddyCredentialStore
   client: WorkBuddyUpstreamClient
   checkIn: (signal?: AbortSignal) => Promise<WorkBuddyCheckInResult>
   catalog: WorkBuddyCatalog
@@ -699,10 +740,20 @@ function createVariantRuntime(
   identityOf: (variantId: string) => string | undefined,
 ): VariantRuntime {
   const client = new WorkBuddyUpstreamClient()
-  const store = new WorkBuddyCredentialStore({
+  /**
+   * Every sign-in of this product, with failover between them.
+   *
+   * The manager owns the credential stores; `activeStore()` is what the rest of
+   * this factory means by "the account". Keeping the indirection in ONE place is
+   * what lets the pool decide the answer without every catalog, probe and
+   * check-in path having to know a pool exists.
+   */
+  const accounts = new WorkBuddyAccountManager({
     variant,
     refresh: credential => client.refreshToken(credential),
   })
+  /** The account in effect right now; falls back to slot 0 before discovery. */
+  const activeStore = (): WorkBuddyCredentialStore => accounts.activeStore()
   const fallback = fallbackFor(variant)
   const catalog = new WorkBuddyCatalog(fallback)
   // The initial preferences come from the caller's LIVE configuration view
@@ -740,7 +791,9 @@ function createVariantRuntime(
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
-    credentials: store,
+    // A live read, so a probe records against whichever account is serving
+    // rather than the one that happened to be active at construction.
+    credentials: { current: async () => activeStore().current() } as WorkBuddyCredentialStore,
     client,
     consent: () => readField(current(), 'probeConsent') === true,
     // Observations are per account: the service reads and writes its records
@@ -750,10 +803,16 @@ function createVariantRuntime(
   })
   return {
     variant,
-    store,
+    accounts,
+    // Defined as a getter so the twelve existing `runtime.store.xxx` call sites
+    // keep meaning "the account in effect" after the pool switches. Assigning a
+    // field would freeze whichever account was active at construction.
+    get store(): WorkBuddyCredentialStore {
+      return activeStore()
+    },
     client,
     checkIn: async (signal?: AbortSignal) => {
-      const credential = await store.current()
+      const credential = await activeStore().current()
       return checkInService.checkIn(variant.id, credential, signal)
     },
     catalog,
@@ -770,6 +829,49 @@ function createVariantRuntime(
     inflightFetch: undefined,
     invalidate: () => {},
     registered: false,
+  }
+}
+
+/**
+ * The account pool as the card renders it.
+ *
+ * Returns undefined when the variant holds at most one account: a "pool" of one
+ * is not a pool, and showing it would put a redundant section on every existing
+ * single-account install.
+ *
+ * @param runtime - the variant's runtime.
+ * @returns the pool section, or undefined when there is nothing to explain.
+ */
+function poolSection(runtime: VariantRuntime): {
+  accounts: readonly {
+    id: string
+    label: string
+    active: boolean
+    cooldownUntilMs: number
+    cooldownReason?: string
+    rateLimitHits: number
+    needsSignIn?: boolean
+    lastSuccessAtMs?: number
+  }[]
+  available: number
+} | undefined {
+  const pool = runtime.accounts.accountPool()
+  const records = pool.all()
+  if (records.length <= 1) return undefined
+  const activeId = pool.active()?.id
+  const now = Date.now()
+  return {
+    accounts: records.map(record => ({
+      id: record.id,
+      label: record.label,
+      active: record.id === activeId,
+      cooldownUntilMs: record.cooldownUntilMs,
+      ...record.cooldownReason === undefined ? {} : { cooldownReason: record.cooldownReason },
+      rateLimitHits: record.rateLimitHits,
+      ...record.needsSignIn === true ? { needsSignIn: true } : {},
+      ...record.lastSuccessAtMs === undefined ? {} : { lastSuccessAtMs: record.lastSuccessAtMs },
+    })),
+    available: pool.available(now).length,
   }
 }
 
@@ -846,9 +948,31 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  * @returns whether the provider registered.
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime, seedCatalog: () => Promise<void>): Promise<boolean> {
-  const { variant, store, client, catalog, probeService } = runtime
+  const { variant, client, catalog, probeService } = runtime
+  // Discover every account already on disk BEFORE anything reads "the account":
+  // the manager falls back to slot 0 until it has loaded, so a pool of several
+  // sign-ins would otherwise serve the first one until some later sweep.
+  try {
+    await runtime.accounts.load()
+  } catch (error: unknown) {
+    ctx.logger.warn(`dsh-workbuddy-connect: ${variant.displayName} account discovery failed`, error)
+  }
   const shim = createWorkBuddyShim({
-    store,
+    // The MANAGER, not a captured store: the shim resolves the credential per
+    // request, which is what lets failover serve the next account without the
+    // shim being rebuilt.
+    store: runtime.store,
+    accountPool: runtime.accounts.accountPool(),
+    onAccountOutcome: (id: string, outcome: UpstreamErrorKind | 'ok') => {
+      runtime.accounts.accountPool().report(id, outcome, Date.now())
+    },
+    // A pool record holds a PATH; only the manager can turn it into a credential
+    // (per-account refresh included), so the shim delegates that here.
+    resolveAccount: async (id: string) => {
+      const account = runtime.accounts.get(id)
+      if (account === undefined) throw new Error('workbuddy: account ' + id + ' is no longer in the pool')
+      return account.store.resolve()
+    },
     client,
     catalog,
     logger: ctx.logger,
@@ -870,7 +994,9 @@ async function startVariant(ctx: Context, runtime: VariantRuntime, seedCatalog: 
       providerId: variant.id,
       displayName: variant.displayName,
       shim,
-      store,
+      // A live read, so the adapter's status answers follow the account the pool
+      // has actually put in effect rather than the one active at construction.
+      store: runtime.store,
       catalog,
       resolveAttachments: () => ctx.get('attachments'),
       observe: modelId => probeService.recordFor(modelId),
@@ -1459,6 +1585,10 @@ export function apply(ctx: Context, config: Config): void {
         disabledModels: () => runtime.catalog.disabledModels(),
         activationRequired: () => runtime.activationRequired,
         checkIn: () => checkInStore.read(runtime.variant.id),
+        // The pool's health, so the card can show that several accounts are
+        // sharing the load. Reported only once there is more than one, because a
+        // single-account install has no pool to explain.
+        pool: () => poolSection(runtime),
       })
       registerWorkBuddyLoginRoute(webCtx, {
         path: runtime.variant.loginPath,
@@ -1506,7 +1636,14 @@ export function apply(ctx: Context, config: Config): void {
             }
           }
           try {
-            await runtime.store.save(credential)
+            // APPEND, not overwrite. Signing in is how a second account joins the
+            // pool; the manager keys by identity, so re-signing the same account
+            // updates it in place instead of creating a duplicate.
+            const account = await runtime.accounts.add(credential)
+            // The freshly signed-in account becomes active: a user who just
+            // finished a sign-in is asking to use that account.
+            runtime.accounts.accountPool().setActive(account.record.id)
+            await runtime.accounts.flush()
           } catch (error: unknown) {
             return { status: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : String(error) }
           }
@@ -1524,14 +1661,32 @@ export function apply(ctx: Context, config: Config): void {
           const attempt = loginAttempts.get(runtime.variant.id)
           if (attempt !== undefined) loginClient.forget(attempt.state)
           loginAttempts.delete(runtime.variant.id)
-          await runtime.store.logout()
-          adoptIdentity(runtime, undefined)
+          // ONLY the active account, by the user's ruling. A pool of several
+          // sign-ins would otherwise lose all of them to one click, and the
+          // remaining accounts are the reason the pool exists.
+          const active = runtime.accounts.accountPool().active()
+          if (active !== undefined) {
+            await runtime.accounts.remove(active.id)
+          } else {
+            await runtime.store.logout()
+          }
+          // The next account in the pool takes over, if there is one: removing the
+          // active account is not the same as signing out of the product, and the
+          // pool's whole purpose is that another account keeps serving.
+          const credential = await runtime.accounts.activeStore().current().catch(() => undefined)
+          adoptIdentity(runtime, credential === undefined ? undefined : credentialIdentity(credential))
         },
         importDocument: async document => {
           // The store validates the realm before writing, so a CN document
           // offered to the international card is refused with a message naming
           // the product it belongs to.
+          // The store validates the realm before writing, and the manager keys
+          // by identity, so importing an account already in the pool updates it
+          // rather than adding a duplicate.
           const credential = await runtime.store.importDocument(document)
+          const account = await runtime.accounts.add(credential)
+          runtime.accounts.accountPool().setActive(account.record.id)
+          await runtime.accounts.flush()
           // Publishing the account is the same transition a completed sign-in
           // performs, so the model group appears without waiting for the sweep.
           const identity = credentialIdentity(credential)
