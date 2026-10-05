@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+*.log
+.DS_Store
+
+# 构建产物：本插件是 DSH bundle，lib/ 需要随仓库提供吗？
+# 保留 —— DSH 从 lib/ 加载，且 profile 安装的是构建后的包。
+# 若你希望 CI 构建，取消下面这行的注释并调整 package.json 的 prepack。
+# lib/
+
+# 编辑器与工具
+.idea/
+.vscode/
+*.swp

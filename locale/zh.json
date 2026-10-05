@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WorkBuddy 连接器",
+    "description": "接入 WorkBuddy 的模型服务：双区域模型开关、上下文窗口、额度查询与每日签到。"
+  }
+}

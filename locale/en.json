@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WorkBuddy Connector",
+    "description": "Connect WorkBuddy's model service: per-region model toggles, context windows, quota lookup, and daily check-in."
+  }
+}

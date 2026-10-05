@@ -1,0 +1,14 @@
+# Register this plugin's providers without changing the profile's current
+# default model. The plugin adopts whatever sign-in the user already has —
+# WorkBuddy's own device authorization for the two WorkBuddy products, and the
+# existing desktop login or API key for each merged backend — so no separate
+# OAuth flow is started here.
+#
+# The row name is the package specifier and must equal this package.json's
+# `name` verbatim. The host discovers the client half through
+# `nearestPackage`, which compares the row specifier to the nearest manifest's
+# name and silently drops the client bundle (no error, no log) on any
+# mismatch — including bare-vs-scoped.
+- insert:
+    - id: llm-workbuddy
+      name: dsh-multibuddy-connect

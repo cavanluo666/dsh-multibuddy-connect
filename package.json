@@ -1,0 +1,140 @@
+{
+  "name": "dsh-multibuddy-connect",
+  "displayName": "DSH MultiBuddy Connect",
+  "description": "多后端模型聚合：WorkBuddy（国内版/国际版）+ Trae / Qoder / CodeBuddy / MiMo / Loomy / Cline / Command Code / OpenCode Zen 一并接入 DeepSeek Harness，并提供跨后端的额度与 token 用量汇总。",
+  "version": "0.6.8",
+  "author": {
+    "name": "cavanluo666",
+    "url": "https://246644.xyz",
+    "note": "基于 corrinehu 的 dsh-workbuddy-connect 工作"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "model-provider",
+    "trae",
+    "qoder",
+    "codebuddy",
+    "mimo",
+    "loomy",
+    "cline",
+    "commandcode",
+    "opencode",
+    "usage-dashboard",
+    "multi-account"
+  ],
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.1.7-rc.1",
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "bin": {
+    "dsh-workbuddy-connect": "lib/bin.js"
+  },
+  "scripts": {
+    "prepack": "npm run build",
+    "build": "tsdown",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "assets",
+    "locale/*.json"
+  ],
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cavanluo666/dsh-multibuddy-connect.git"
+  },
+  "homepage": "https://github.com/cavanluo666/dsh-multibuddy-connect#readme",
+  "bugs": "https://github.com/cavanluo666/dsh-multibuddy-connect/issues",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-atomic-write": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-attachment": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-atomic-write": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-attachment": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-model-selection": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-credentials": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.7-rc.1",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "@types/react-test-renderer": "^18.3.1",
+    "react": "^18.2.0",
+    "react-test-renderer": "18.3.1",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  },
+  "icon": "./assets/icon.svg",
+  "contributors": [
+    {
+      "name": "corrinehu",
+      "url": "https://github.com/masknull/dsh-workbuddy-connect"
+    }
+  ]
+}
