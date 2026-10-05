@@ -32,7 +32,7 @@ import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
 import { createLoginKey } from './login-route.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebGrowth, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { createRegistry } from './backends/wiring.ts'
@@ -43,6 +43,7 @@ import { UsageService } from './usage/service.ts'
 import { createUsageKey, registerUsageRoute } from './usage-route.ts'
 import { createBackendsKey, registerBackendsRoute } from './backends/route.ts'
 import { GrowthScheduler, type GrowthTarget } from './growth-scheduler.ts'
+import { WorkBuddyGrowthClient } from './growth.ts'
 import { createOpenAiCompatRoute } from './backends/openai-compat.ts'
 import { WORKBUDDY_CONFIG_ENTRY_ID } from './config-entry.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
@@ -875,6 +876,78 @@ function createVariantRuntime(
   }
 }
 
+/** The growth client, shared by the board read and the automation. */
+const growthClient = new WorkBuddyGrowthClient()
+
+/**
+ * The growth centre as the card renders it.
+ *
+ * Reads the board LIVE, because it changes as the user uses the product. A read
+ * failure is carried INSIDE the section rather than thrown: the rest of the card
+ * — account, credits, models — is still worth showing, and blanking all of it
+ * over one campaign being down would be the wrong trade.
+ *
+ * @param runtime - the variant's runtime.
+ * @param enabled - whether the automation switch is on.
+ * @param lastRun - the automation's most recent run, when there has been one.
+ * @returns the section, always present so the switch is reachable.
+ */
+async function growthSection(
+  runtime: VariantRuntime,
+  enabled: boolean,
+  lastRun: ReturnType<GrowthScheduler['lastSummary']>,
+): Promise<WorkBuddyWebGrowth> {
+  const base: WorkBuddyWebGrowth = { enabled }
+  const withRun: WorkBuddyWebGrowth = lastRun === undefined
+    ? base
+    : {
+        ...base,
+        lastRun: {
+          ranAtMs: lastRun.ranAtMs,
+          manual: lastRun.manual,
+          credit: lastRun.credit,
+          energy: lastRun.energy,
+          accounts: lastRun.accounts.map(account => ({
+            label: account.label,
+            accepted: account.accepted,
+            claimed: account.claimed,
+            credit: account.credit,
+            energy: account.energy,
+            tiersRedeemed: account.tiersRedeemed,
+            draws: account.draws,
+            travelCredit: account.travelCredit,
+            buddyAdopted: account.buddyAdopted,
+            failures: account.failures,
+            ...account.error === undefined ? {} : { error: account.error },
+          })),
+        },
+      }
+  const credential = await runtime.store.current().catch(() => undefined)
+  if (credential === undefined) return withRun
+  try {
+    const board = await growthClient.listTasks(credential)
+    return {
+      ...withRun,
+      board: {
+        tasks: board.tasks.map(task => ({
+          code: task.code,
+          title: task.title,
+          ...task.description === undefined ? {} : { description: task.description },
+          credit: task.credit,
+          energy: task.energy,
+          status: task.status,
+        })),
+        claimable: board.claimable,
+        inProgress: board.tasks.filter(task => task.status === 'in_progress').length,
+        pendingCredit: board.pendingCredit,
+        pendingEnergy: board.pendingEnergy,
+      },
+    }
+  } catch (error: unknown) {
+    return { ...withRun, boardError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /**
  * The account pool as the card renders it.
  *
@@ -1632,6 +1705,13 @@ export function apply(ctx: Context, config: Config): void {
         // sharing the load. Reported only once there is more than one, because a
         // single-account install has no pool to explain.
         pool: () => poolSection(runtime),
+        // The growth board and the automation's last run. The read is live
+        // because the board moves as the user uses the product.
+        growth: () => growthSection(
+          runtime,
+          readField(current(), 'growthAutomation') !== false,
+          growthScheduler.lastSummary(),
+        ),
       })
       registerWorkBuddyLoginRoute(webCtx, {
         path: runtime.variant.loginPath,

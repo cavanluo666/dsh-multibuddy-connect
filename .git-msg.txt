@@ -1,0 +1,38 @@
+积分自动化补全：连签兑换、抽奖、熊猫旅行，并加任务面板
+
+新增能力（全部对着真实账号只读实测过）
+- 连签   GET  /activity/growth/streak
+         POST /activity/growth/redeem {tier, client_token}
+- 抽奖   GET  /activity/growth/lottery/summary
+         POST /activity/growth/lottery/draw {client_token}
+- 熊猫   GET  /activity/growth/buddy/info
+         POST /activity/growth/buddy/agreement {agree}
+         POST /activity/growth/buddy/first
+- 旅行   GET  /activity/growth/buddy/travel/status
+         POST /activity/growth/buddy/travel/depart {location_id}
+         POST /activity/growth/buddy/travel/claim {record_id}
+
+几处只有实测才知道的细节，已写进注释
+- 连签兑换要带 client_token 作幂等键，且每次必须新生成：复用会让重试被当成
+  上一次的重复。锁定档位返回 403，所以必须先读状态再兑换——否则一个「还没
+  解锁」看起来就是真失败。
+- 抽奖机会由兑换档位产生，因此必须在兑换之后跑，顺序反了就抽不到。
+- 领养熊猫有前置：当天须上报过活动，否则 400「first_buddy task not completed」。
+  这属于正常的「还没到时候」，记为该步失败而非整轮失败。
+- 旅行先领取再出发：有奖励待领时直接出发会把它丢掉。
+
+隔离性加强
+四个步骤各自独立 try/catch，任何一步失败不影响其它步骤与任务领取；整轮仍不
+抛出（跑在定时器上）。新增测试专门锁住这一点：连签接口整体挂掉时，任务的
+100 积分照常领到。
+
+任务面板
+卡片新增「积分任务」区块：任务清单（状态徽标、奖励、按可领优先排序、超过 12
+条折叠）、自动化开关状态、最近一次运行摘要（逐账号的接受/领取/连签/抽奖/旅行
+明细与失败原因）。单账号与多账号共用。
+
+修正
+- status-paths.ts 漏了 signed-in 分支的 growth 字段声明（子代理发现并指出正解，
+  已按正解补上，同时移除了卡片里为绕过它而加的临时类型转换）。
+
+810 个测试通过（新增 11 个连签/抽奖/熊猫/旅行测试）；双端类型检查零错误。

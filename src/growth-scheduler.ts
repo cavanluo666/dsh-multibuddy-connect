@@ -56,6 +56,16 @@ export interface GrowthAccountResult {
   inProgress: number
   /** Claims still available but not collected. */
   claimable: number
+  /** Streak tiers redeemed in this run. */
+  tiersRedeemed: number
+  /** Lottery draws made in this run. */
+  draws: number
+  /** What the draws paid, when the campaign states it. */
+  drawsCredit: number
+  /** Credits the buddy's travel produced. */
+  travelCredit: number
+  /** Whether a buddy was adopted in this run. */
+  buddyAdopted: boolean
   failures: readonly string[]
   /** Set when the whole account failed (a dead credential, a network fault). */
   error?: string
@@ -100,6 +110,27 @@ export interface GrowthSchedulerOptions {
   now?: () => number
   /** Injected sleep, so tests do not wait. */
   sleep?: (ms: number) => Promise<void>
+}
+
+/**
+ * Credits a lottery prize paid, when the campaign states a figure.
+ *
+ * The prize payload's shape belongs to the running campaign, so this reads the
+ * few plausible spellings and answers 0 otherwise — a model of it would be wrong
+ * next month, and guessing wrong in the other direction would inflate the
+ * reported earnings.
+ *
+ * @param prize - whatever the draw returned.
+ * @returns the credits, or 0 when none were stated.
+ */
+function creditsFromPrize(prize: unknown): number {
+  if (typeof prize !== 'object' || prize === null) return 0
+  const record = prize as Record<string, unknown>
+  for (const key of ['credit', 'credits', 'reward_credit']) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return 0
 }
 
 /** The local calendar day, matching the ledger's grain. */
@@ -244,6 +275,11 @@ export class GrowthScheduler {
       energy: 0,
       inProgress: 0,
       claimable: 0,
+      tiersRedeemed: 0,
+      draws: 0,
+      drawsCredit: 0,
+      travelCredit: 0,
+      buddyAdopted: false,
       failures: [],
     }
     let credential: WorkBuddyCredential
@@ -292,14 +328,114 @@ export class GrowthScheduler {
       }
     }
     const claimedTasks = summary?.claimed.filter(claim => !claim.alreadyClaimed).length ?? 0
+
+    // ---- Streak, lottery, buddy and travel --------------------------------
+    //
+    // Each step is independently contained. They are separate campaigns on the
+    // upstream, and a change to one of them must not cost the user the others —
+    // which is also why they run AFTER the task pass rather than before: the
+    // task board is the part that always exists.
+    let tiersRedeemed = 0
+    let draws = 0
+    let drawsCredit = 0
+    let travelCredit = 0
+    let buddyAdopted = false
+    let streakCredit = 0
+    let streakEnergy = 0
+
+    // Streak redemption. Read first: a locked tier answers 403 from the redeem
+    // endpoint, which once stripped to an error is indistinguishable from a real
+    // failure.
+    try {
+      const streak = await this.client.streakStatus(credential)
+      for (const tier of streak.tiers) {
+        if (this.disposed) break
+        if (tier.status !== 'claimable') continue
+        try {
+          await this.client.redeemStreakTier(credential, tier.tier)
+          tiersRedeemed += 1
+          streakCredit += tier.credit
+          streakEnergy += tier.energy
+        } catch (error: unknown) {
+          failures.push('streak ' + tier.tier + ': ' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+    } catch (error: unknown) {
+      failures.push('streak: ' + (error instanceof Error ? error.message : String(error)))
+    }
+
+    // Lottery. Chances are granted BY redeeming tiers, so this must follow the
+    // redemption above; drawing them in the other order spends nothing.
+    try {
+      let chances = await this.client.lotteryChances(credential)
+      while (chances > 0 && !this.disposed) {
+        try {
+          const prize = await this.client.lotteryDraw(credential)
+          draws += 1
+          drawsCredit += creditsFromPrize(prize)
+        } catch (error: unknown) {
+          failures.push('lottery: ' + (error instanceof Error ? error.message : String(error)))
+          break
+        }
+        chances -= 1
+      }
+    } catch (error: unknown) {
+      failures.push('lottery: ' + (error instanceof Error ? error.message : String(error)))
+    }
+
+    // Buddy and travel. Adoption is gated upstream on having reported activity
+    // that day, so a refusal here is the ordinary "not yet" and is recorded as a
+    // failure line rather than treated as fatal.
+    try {
+      let buddy = await this.client.buddyInfo(credential)
+      if (buddy === undefined) {
+        try {
+          await this.client.buddyAgree(credential)
+          await this.client.buddyAdoptFirst(credential)
+          buddyAdopted = true
+          buddy = await this.client.buddyInfo(credential)
+        } catch (error: unknown) {
+          // Expected until the account has activity today.
+          failures.push('buddy: ' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+      if (buddy !== undefined) {
+        const travel = await this.client.travelStatus(credential)
+        // Collect an arrived trip BEFORE departing a new one: departing while a
+        // reward is waiting would leave it uncollected.
+        if (travel.state === 'arrived' && travel.recordId > 0) {
+          try {
+            travelCredit += await this.client.travelClaim(credential, travel.recordId)
+          } catch (error: unknown) {
+            failures.push('travel claim: ' + (error instanceof Error ? error.message : String(error)))
+          }
+        }
+        const refreshed = travel.state === 'arrived' ? await this.client.travelStatus(credential) : travel
+        if (refreshed.state === 'idle' && !refreshed.dailyLimitReached) {
+          try {
+            await this.client.travelDepart(credential)
+          } catch (error: unknown) {
+            failures.push('travel depart: ' + (error instanceof Error ? error.message : String(error)))
+          }
+        }
+      }
+    } catch (error: unknown) {
+      failures.push('buddy: ' + (error instanceof Error ? error.message : String(error)))
+    }
+
     return {
       ...base,
       accepted,
       claimed: claimedTasks,
-      credit: summary?.credit ?? 0,
-      energy: summary?.energy ?? 0,
+      credit: (summary?.credit ?? 0) + streakCredit + drawsCredit + travelCredit,
+      energy: (summary?.energy ?? 0) + streakEnergy,
       inProgress: after.tasks.filter(task => task.status === 'in_progress').length,
       claimable: after.tasks.filter(task => task.status === 'claimable').length,
+      tiersRedeemed,
+      draws,
+      drawsCredit,
+      travelCredit,
+      buddyAdopted,
       failures: [...failures, ...(summary?.failures.map(f => f.code + ': ' + f.message) ?? [])],
     }
   }

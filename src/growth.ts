@@ -19,6 +19,7 @@
  * @module dsh-multibuddy-connect/growth
  */
 
+import { randomUUID } from 'node:crypto'
 import type { WorkBuddyCredential } from './auth.ts'
 
 /** Web origin serving the claim endpoint; also the Origin/Referer it demands. */
@@ -94,6 +95,56 @@ export interface GrowthClaimSummary {
   energy: number
   /** Failures, so a partial pass is reported rather than silently short. */
   failures: readonly { code: string; message: string }[]
+}
+
+/** How one streak tier stands. */
+export type StreakTierStatus = 'locked' | 'claimable' | 'claimed' | 'unknown'
+
+/** One consecutive-login tier. */
+export interface StreakTier {
+  /** Tier id, e.g. \`7\` or \`14\`. */
+  tier: string
+  /** Consecutive days the tier requires. */
+  days: number
+  credit: number
+  energy: number
+  /** Makeup cards the tier pays. */
+  cards: number
+  /** Lottery draws the tier unlocks. */
+  chances: number
+  status: StreakTierStatus
+}
+
+/** The consecutive-login picture. */
+export interface StreakStatus {
+  /** Consecutive days so far. */
+  days: number
+  monthTotalDays: number
+  /** The next tier's id, when one exists. */
+  nextTier?: string
+  /** Days still needed for it. */
+  nextTierRemaining: number
+  /** Makeup cards in hand. */
+  makeupCards: number
+  tiers: readonly StreakTier[]
+}
+
+/** The buddy's travel state. */
+export interface TravelStatus {
+  /** Upstream state word, e.g. \`idle\` or \`travelling\`. */
+  state: string
+  /** The active trip's record id, needed to collect it. */
+  recordId: number
+  /** Whether today's trips are used up. */
+  dailyLimitReached: boolean
+  /** Credits the completed trip is worth. */
+  rewardCredit: number
+}
+
+/** The buddy itself. */
+export interface BuddyInfo {
+  instanceId: number
+  name: string
 }
 
 /** Envelope shape the growth endpoints share. */
@@ -329,4 +380,227 @@ export class WorkBuddyGrowthClient {
     }
     return { claimed, credit, energy, failures }
   }
+
+  /**
+   * Send one growth request and return its \`data\` object.
+   *
+   * A second envelope reader exists because these endpoints are addressed the
+   * same way but answer with different payloads; routing every one through a
+   * single helper is what keeps the error handling identical across them.
+   *
+   * @param credential - the account.
+   * @param method - the HTTP method.
+   * @param path - the path on the growth origin, leading slash included.
+   * @param body - the JSON body, when the call takes one.
+   * @returns the envelope's \`data\` as a record.
+   */
+  private async growthJson(
+    credential: WorkBuddyCredential,
+    method: 'GET' | 'POST',
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const init: RequestInit = {
+      method,
+      headers: chatHeaders(credential),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    }
+    if (body !== undefined) init.body = JSON.stringify(body)
+    const response = await this.fetchImpl(growthOrigin() + path, init)
+    const envelope = await readEnvelope(response)
+    return typeof envelope.data === 'object' && envelope.data !== null && !Array.isArray(envelope.data)
+      ? envelope.data as Record<string, unknown>
+      : {}
+  }
+
+  /**
+   * The consecutive-login picture.
+   *
+   * READ FIRST, REDEEM SECOND: a locked tier answers 403 from the redeem
+   * endpoint, which once stripped to an error is indistinguishable from a real
+   * failure. The tier's own status is the only honest answer to "is there
+   * anything to collect".
+   *
+   * @param credential - the account.
+   * @returns days, next tier, makeup cards, and each tier's state.
+   */
+  async streakStatus(credential: WorkBuddyCredential): Promise<StreakStatus> {
+    const data = await this.growthJson(credential, 'GET', '/activity/growth/streak')
+    const streak = asRecord(data['streak'])
+    const redemption = asRecord(data['redemption_status'])
+    const cards = asRecord(data['makeup_cards'])
+    const tiers: StreakTier[] = []
+    if (Array.isArray(redemption['tiers'])) {
+      for (const entry of redemption['tiers']) {
+        const tier = asRecord(entry)
+        const name = typeof tier['tier'] === 'string' ? tier['tier'] : ''
+        if (name === '') continue
+        tiers.push({
+          tier: name,
+          days: numOf(tier['days']),
+          credit: numOf(tier['credit']),
+          energy: numOf(tier['energy']),
+          cards: numOf(tier['cards']),
+          chances: numOf(tier['chances']),
+          // The flat \`tier_<name>_status\` field is authoritative; the per-tier
+          // entry carries no status of its own.
+          status: parseTierStatus(redemption['tier_' + name + '_status']),
+        })
+      }
+    }
+    return {
+      days: numOf(streak['days']),
+      monthTotalDays: numOf(streak['month_total_days']),
+      ...typeof streak['next_tier'] === 'string' && streak['next_tier'] !== ''
+        ? { nextTier: streak['next_tier'] }
+        : {},
+      nextTierRemaining: numOf(streak['next_tier_remaining']),
+      makeupCards: numOf(cards['balance']),
+      tiers,
+    }
+  }
+
+  /**
+   * Redeem one unlocked streak tier.
+   *
+   * The client token is the upstream's idempotency key, so a FRESH one per
+   * attempt is what keeps a retry from being read as a duplicate of the last.
+   *
+   * @param credential - the account.
+   * @param tier - the tier id.
+   */
+  async redeemStreakTier(credential: WorkBuddyCredential, tier: string): Promise<void> {
+    await this.growthJson(credential, 'POST', '/activity/growth/redeem', {
+      tier,
+      client_token: randomUUID(),
+    })
+  }
+
+  /**
+   * How many lottery draws are available.
+   *
+   * @param credential - the account.
+   * @returns the draw count.
+   */
+  async lotteryChances(credential: WorkBuddyCredential): Promise<number> {
+    const data = await this.growthJson(credential, 'GET', '/activity/growth/lottery/summary')
+    return numOf(data['chances'])
+  }
+
+  /**
+   * Draw the lottery once.
+   *
+   * The prize payload's shape is set by the running campaign, so it is passed
+   * through rather than modelled — a model here would be wrong next month.
+   *
+   * @param credential - the account.
+   * @returns whatever the campaign returned.
+   */
+  async lotteryDraw(credential: WorkBuddyCredential): Promise<unknown> {
+    return this.growthJson(credential, 'POST', '/activity/growth/lottery/draw', {
+      client_token: randomUUID(),
+    })
+  }
+
+  /**
+   * The buddy profile, when the account has one.
+   *
+   * \`data.buddy\` arrives as null, absent, or an empty object depending on how
+   * far the account got; all three mean the same thing to a caller, so all three
+   * answer undefined.
+   *
+   * @param credential - the account.
+   * @returns the buddy, or undefined when none has been adopted.
+   */
+  async buddyInfo(credential: WorkBuddyCredential): Promise<BuddyInfo | undefined> {
+    const data = await this.growthJson(credential, 'GET', '/activity/growth/buddy/info')
+    const buddy = asRecord(data['buddy'])
+    if (Object.keys(buddy).length === 0) return undefined
+    return { instanceId: numOf(buddy['instance_id']), name: String(buddy['name'] ?? '') }
+  }
+
+  /** Agree to the buddy terms. Idempotent upstream. */
+  async buddyAgree(credential: WorkBuddyCredential): Promise<void> {
+    await this.growthJson(credential, 'POST', '/activity/growth/buddy/agreement', { agree: true })
+  }
+
+  /**
+   * Adopt the first buddy.
+   *
+   * Gated upstream on having reported activity that day: without it the answer
+   * is 400 "first_buddy task not completed yet". Thrown as-is so the caller can
+   * classify it as "not yet" rather than as a failure.
+   */
+  async buddyAdoptFirst(credential: WorkBuddyCredential): Promise<void> {
+    await this.growthJson(credential, 'POST', '/activity/growth/buddy/first', {})
+  }
+
+  /**
+   * The buddy's travel state.
+   *
+   * @param credential - the account.
+   * @returns the state, including the record id a claim needs.
+   */
+  async travelStatus(credential: WorkBuddyCredential): Promise<TravelStatus> {
+    const data = await this.growthJson(credential, 'GET', '/activity/growth/buddy/travel/status')
+    return {
+      state: typeof data['state'] === 'string' ? data['state'] : '',
+      recordId: numOf(data['record_id']),
+      dailyLimitReached: data['daily_limit_reached'] === true,
+      rewardCredit: numOf(data['reward_credit']),
+    }
+  }
+
+  /**
+   * Send the buddy travelling.
+   *
+   * The location is fixed at 4: the four locations have identical reward and
+   * duration ranges, so there is nothing to choose between them.
+   *
+   * @param credential - the account.
+   */
+  async travelDepart(credential: WorkBuddyCredential, locationId = 4): Promise<void> {
+    await this.growthJson(credential, 'POST', '/activity/growth/buddy/travel/depart', {
+      location_id: locationId,
+    })
+  }
+
+  /**
+   * Collect an arrived trip.
+   *
+   * The record id comes from {@link travelStatus}; the upstream rejects a claim
+   * without it.
+   *
+   * @param credential - the account.
+   * @param recordId - the trip's record id.
+   * @returns the credits collected, 0 when the payload states none.
+   */
+  async travelClaim(credential: WorkBuddyCredential, recordId: number): Promise<number> {
+    const data = await this.growthJson(credential, 'POST', '/activity/growth/buddy/travel/claim', {
+      record_id: recordId,
+    })
+    // A missing reward field is not a failure: the trip is collected either way.
+    return numOf(data['reward_credit'])
+  }
+}
+
+/** Coerce an unknown value to a record, empty when it is not one. */
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+/** Coerce an unknown value to a finite number, 0 otherwise. */
+function numOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/** Read one tier's unlock state from its flat status field. */
+function parseTierStatus(value: unknown): StreakTierStatus {
+  if (typeof value !== 'string') return 'unknown'
+  if (value === 'locked') return 'locked'
+  if (value === 'claimable' || value === 'unlocked' || value === 'available') return 'claimable'
+  if (value === 'claimed' || value === 'redeemed') return 'claimed'
+  return 'unknown'
 }

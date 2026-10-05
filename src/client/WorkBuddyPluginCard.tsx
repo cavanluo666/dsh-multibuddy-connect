@@ -5,7 +5,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebPoolAccount, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
+import type { WorkBuddyWebGrowth, WorkBuddyWebGrowthRun, WorkBuddyWebGrowthTask, WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebPoolAccount, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import { QuotaSettingsContent } from './QuotaSettingsCard.tsx'
@@ -108,6 +108,15 @@ const POLL_INTERVAL_MS = 60_000
  * it never touches the network.
  */
 const POOL_TICK_MS = 1_000
+
+/**
+ * How many board tasks are shown before the list folds.
+ *
+ * Twelve fills roughly one screen of the card: past that the section starts
+ * pushing the run summary (the part with news in it) below the fold, so the
+ * remainder moves behind an explicit "展开全部" instead of being hidden silently.
+ */
+const GROWTH_TASK_FOLD_THRESHOLD = 12
 
 /*
  * Styling mirrors the Settings panel's own plugin card (`.YyYd_a_card` in the
@@ -408,6 +417,94 @@ const poolMetaStyle: CSSProperties = {
   textAlign: 'right',
   color: 'var(--dsw-alias-label-tertiary)',
 }
+
+/*
+ * Growth ("积分任务") styles. Same tokens, radii, and type scale as the pool
+ * rows above: this is one more section of the same card, and a reader should
+ * not be able to tell the task list and the account list were written apart.
+ */
+
+/** One board task, or one account of the last run: content on the left, rewards on the right. */
+const growthRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 8,
+  padding: '8px 10px',
+  borderRadius: 8,
+  border: '.5px solid var(--dsw-alias-border-l4)',
+  background: 'var(--dsw-alias-bg-layer-3)',
+}
+
+/** Title and description, stacked so a long task name wraps instead of pushing the reward out. */
+const growthIdentityStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }
+
+const growthTitleStyle: CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.5,
+  fontWeight: 500,
+  color: 'var(--dsw-alias-label-primary)',
+  wordBreak: 'break-word',
+}
+
+/** The dimmer second line: a task's description, or an account's per-run counters. */
+const growthMetaStyle: CSSProperties = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' }
+
+/** Reward figures: right-aligned on one line, and never squeezed by the title. */
+const growthRewardStyle: CSSProperties = {
+  flex: '0 0 auto',
+  fontSize: 12,
+  lineHeight: 1.5,
+  textAlign: 'right',
+  color: 'var(--dsw-alias-label-secondary)',
+  whiteSpace: 'nowrap',
+}
+
+/**
+ * The status chip. A neutral shell whose colours are spread in per status, so
+ * the five states reuse the theme's own tones instead of five hardcoded pairs
+ * that would drift from the palette (and go unreadable in a dark theme).
+ */
+const growthChipStyle: CSSProperties = {
+  padding: '1px 8px',
+  borderRadius: 999,
+  borderWidth: '1px',
+  borderStyle: 'solid',
+  borderColor: 'var(--dsw-alias-border-l2)',
+  fontSize: 11,
+  lineHeight: '18px',
+  whiteSpace: 'nowrap',
+  flex: '0 0 auto',
+}
+
+/** The expansion toggle under a long list: a plain link-like button, not a card action. */
+const growthToggleStyle: CSSProperties = {
+  alignSelf: 'flex-start',
+  padding: 0,
+  borderWidth: 0,
+  borderStyle: 'solid',
+  borderColor: 'transparent',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 12,
+  lineHeight: 1.5,
+  cursor: 'pointer',
+  textDecoration: 'underline',
+}
+
+/** One account inside the last-run summary: name plus its counters, then any failure note. */
+const growthRunAccountStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: '6px 10px',
+  borderRadius: 8,
+  border: '.5px solid var(--dsw-alias-border-l4)',
+  background: 'var(--dsw-alias-bg-layer-3)',
+}
+
+/** The failure list under one account: indented, dimmer, and never wider than its row. */
+const growthFailureListStyle: CSSProperties = { margin: '4px 0 0', paddingLeft: 18, fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' }
 
 /** One probeable model's row: name on the left, state and action on the right. */
 const probeRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }
@@ -1365,6 +1462,258 @@ function PoolSection({ pool }: {
   )
 }
 
+
+/*
+ * The growth board and the automation's last run.
+ *
+ * Why this section exists: the automation claims rewards on its own schedule, so
+ * without it the ONLY observable effect of the feature is a credit number that
+ * happens to grow — a user cannot tell a working automation from a broken one,
+ * cannot see which tasks are still waiting on real product use, and cannot see
+ * that a run failed on one account but succeeded on another. Everything here is
+ * therefore evidence rather than control: the switch itself lives with the
+ * host's own settings, and this section only reports what it did.
+ *
+ * Two independent things are reported, and either can be missing:
+ *   - the board (what is left to earn), which the host omits when the read
+ *     failed — in that case \`boardError\` explains why, and no list is drawn;
+ *   - the last run (what was just earned), which is absent until the automation
+ *     or a manual trigger has run at least once.
+ *
+ * An older host sends no \`growth\` field at all; the caller renders nothing in
+ * that case, so a card from before this feature exists is untouched.
+ */
+
+/** The order the board is shown in: what needs doing now, first. */
+const GROWTH_STATUS_ORDER: readonly WorkBuddyWebGrowthTask['status'][] = [
+  'claimable',
+  'in_progress',
+  'not_accepted',
+  'claimed',
+  'locked',
+]
+
+/**
+ * How a status reads, and in which tone.
+ *
+ * \`claimable\` is the only state a reader can act on, so it is the only one given
+ * the brand colour; \`locked\` and \`claimed\` are finished or unreachable and are
+ * dimmed rather than tinted, because a board where everything is coloured says
+ * nothing.
+ */
+function growthStatusChip(status: WorkBuddyWebGrowthTask['status']): { text: string; style: CSSProperties } {
+  if (status === 'claimable') {
+    return {
+      text: '可领取',
+      style: { color: 'var(--dsw-alias-brand-primary)', borderColor: 'var(--dsw-alias-brand-primary)', fontWeight: 600 },
+    }
+  }
+  if (status === 'in_progress') return { text: '待完成', style: { color: 'var(--dsw-alias-label-secondary)' } }
+  if (status === 'not_accepted') return { text: '待接受', style: { color: 'var(--dsw-alias-label-tertiary)' } }
+  if (status === 'claimed') return { text: '已领取', style: { color: 'var(--dsw-alias-label-dimmed)', opacity: 0.75 } }
+  return { text: '未解锁', style: { color: 'var(--dsw-alias-label-dimmed)', opacity: 0.75 } }
+}
+
+/** Rank of a status in the display order; an unrecognized status sorts last rather than first. */
+function growthStatusRank(status: WorkBuddyWebGrowthTask['status']): number {
+  const index = GROWTH_STATUS_ORDER.indexOf(status)
+  return index < 0 ? GROWTH_STATUS_ORDER.length : index
+}
+
+/**
+ * A task's reward as words, dropping the zero halves.
+ *
+ * "0 积分 0 能量" is noise: a task that pays only energy is normal, and printing
+ * the zero makes the row taller to say nothing. A task that somehow pays neither
+ * gets a dash, so the right-hand column never collapses to an empty gap that
+ * looks like a rendering bug.
+ */
+function growthRewardText(credit: number, energy: number): string {
+  const parts: string[] = []
+  if (credit > 0) parts.push('+' + formatNumber(credit) + ' 积分')
+  if (energy > 0) parts.push('+' + formatNumber(energy) + ' 能量')
+  return parts.length === 0 ? '—' : parts.join(' ')
+}
+
+/** One task row: status chip, title (with its description as the tooltip and a second line), reward. */
+function GrowthTaskRow({ task }: { task: WorkBuddyWebGrowthTask }): ReactElement {
+  const chip = growthStatusChip(task.status)
+  const description = task.description === undefined || task.description === '' ? undefined : task.description
+  return (
+    <div style={growthRowStyle}>
+      <span style={{ ...growthChipStyle, ...chip.style }}>{chip.text}</span>
+      <span style={growthIdentityStyle}>
+        {/*
+          * The description is also the tooltip: a mature board's descriptions run
+          * to a sentence each, and repeating all of them inline would triple the
+          * section's height. Truncating to one line keeps every row the same
+          * height and still lets a reader who wants the detail hover for it.
+          */}
+        <span style={growthTitleStyle} title={description}>{task.title}</span>
+        {description === undefined ? null : (
+          <span style={{ ...growthMetaStyle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {description}
+          </span>
+        )}
+      </span>
+      <span style={growthRewardStyle}>{growthRewardText(task.credit, task.energy)}</span>
+    </div>
+  )
+}
+
+/** The board: task count, what is claimable, and the tasks themselves. */
+function GrowthBoard({ board }: { board: NonNullable<WorkBuddyWebGrowth['board']> }): ReactElement {
+  /*
+   * The fold is local to this component and deliberately not lifted: collapsing
+   * a long list is a reading preference, not card state, and lifting it would
+   * re-render the whole card (and its poll wiring) on a click.
+   */
+  const [expanded, setExpanded] = useState(false)
+  /*
+   * Sorting happens here rather than upstream because it is a presentation
+   * decision: the host sends the board in its own order, and the one thing a
+   * reader wants first is what they can collect. Array.prototype.sort is stable
+   * in every engine this runs in, so tasks sharing a status keep the host's
+   * relative order instead of being shuffled by the sort itself.
+   */
+  const sorted = [...board.tasks].sort((a, b) => growthStatusRank(a.status) - growthStatusRank(b.status))
+  const overflow = sorted.length > GROWTH_TASK_FOLD_THRESHOLD
+  const visible = overflow && !expanded ? sorted.slice(0, GROWTH_TASK_FOLD_THRESHOLD) : sorted
+  if (sorted.length === 0) return <p style={descriptionStyle}>{'成长中心暂时没有可展示的任务。'}</p>
+  return (
+    <>
+      <div style={quotaGroupStyle}>
+        {visible.map((task, index) => <GrowthTaskRow key={task.code + '#' + String(index)} task={task} />)}
+      </div>
+      {overflow ? (
+        <button type="button" style={growthToggleStyle} onClick={() => { setExpanded(value => !value) }}>
+          {expanded ? '收起' : '展开全部 ' + String(sorted.length) + ' 个'}
+        </button>
+      ) : null}
+    </>
+  )
+}
+
+/** One account's contribution to the last run. */
+function GrowthRunAccount({ account }: { account: WorkBuddyWebGrowthRun['accounts'][number] }): ReactElement {
+  const [showFailures, setShowFailures] = useState(false)
+  /*
+   * Only the counters that actually moved are printed. A run on a quiet day
+   * touches two of the seven, and a row of five zeroes buries those two — the
+   * line is meant to answer "what did this account manage", not to inventory
+   * every capability the automation has.
+   */
+  const counters: string[] = []
+  if (account.accepted > 0) counters.push('接受 ' + String(account.accepted))
+  if (account.claimed > 0) counters.push('领取 ' + String(account.claimed))
+  if (account.tiersRedeemed > 0) counters.push('连签 ' + String(account.tiersRedeemed) + ' 档')
+  if (account.draws > 0) counters.push('抽奖 ' + String(account.draws) + ' 次')
+  if (account.travelCredit > 0) counters.push('旅行 +' + formatNumber(account.travelCredit))
+  if (account.buddyAdopted) counters.push('已领养熊猫')
+  return (
+    <div style={growthRunAccountStyle}>
+      <div style={rowStyle}>
+        <span style={growthTitleStyle}>{account.label}</span>
+        <span style={growthRewardStyle}>{growthRewardText(account.credit, account.energy)}</span>
+      </div>
+      {counters.length === 0 ? null : <span style={growthMetaStyle}>{counters.join(' · ')}</span>}
+      {/*
+        * A per-account error means the automation could not do ANYTHING here,
+        * which is strictly worse than a partial failure and is what the reader
+        * actually needs to act on — so it is the one line in this section that
+        * takes the error colour instead of the dim tone.
+        */}
+      {account.error === undefined || account.error === ''
+        ? null
+        : <span style={errorStyle}>{'失败：' + account.error}</span>}
+      {account.failures.length === 0 ? null : (
+        <>
+          <button type="button" style={growthToggleStyle} onClick={() => { setShowFailures(value => !value) }}>
+            {showFailures ? '收起失败明细' : '查看失败明细（' + String(account.failures.length) + '）'}
+          </button>
+          {showFailures
+            ? <ul style={growthFailureListStyle}>
+                {account.failures.map((failure, index) => <li key={String(index)}>{failure}</li>)}
+              </ul>
+            : null}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** The last automation run: when, how much, and what each account managed. */
+function GrowthLastRun({ run }: { run: WorkBuddyWebGrowthRun }): ReactElement {
+  return (
+    <div style={quotaGroupStyle}>
+      <div style={rowStyle}>
+        {/* The clock is formatted by hand rather than with toLocaleString: the
+            harness pins the locale, and a locale-formatted time can disagree
+            with the wall clock the reader is looking at. */}
+        <h3 style={quotaTitleStyle}>{'上次自动领取：' + formatClockTime(run.ranAtMs) + (run.manual ? '（手动）' : '')}</h3>
+        <span style={growthRewardStyle}>{growthRewardText(run.credit, run.energy)}</span>
+      </div>
+      {run.accounts.length === 0
+        ? <p style={descriptionStyle}>{'本轮没有账号参与。'}</p>
+        : run.accounts.map((account, index) => (
+            <GrowthRunAccount key={account.label + '#' + String(index)} account={account} />
+          ))}
+    </div>
+  )
+}
+
+/**
+ * The growth section as a whole.
+ *
+ * Reports three separate facts in a fixed order — the switch, the board, the
+ * last run — because they fail independently: the automation can be running
+ * with an unreadable board, or readable with the automation switched off, and
+ * merging them into one "状态" line would hide exactly the combination a
+ * confused reader is looking at.
+ */
+function GrowthSection({ growth }: { growth: WorkBuddyWebGrowth }): ReactElement {
+  const board = growth.board
+  const failed = growth.boardError !== undefined && growth.boardError !== ''
+  /*
+   * The subtitle is assembled from parts rather than templated, because the two
+   * optional parts must simply disappear when they do not apply: "未领约 0 积分"
+   * would be a claim about a number that is not on the table.
+   */
+  const summaryParts: string[] = []
+  if (board !== undefined) {
+    summaryParts.push('共 ' + String(board.tasks.length) + ' 个任务')
+    summaryParts.push('可领 ' + String(board.claimable))
+    summaryParts.push('待完成 ' + String(board.inProgress))
+    if (board.pendingCredit > 0) summaryParts.push('未领约 ' + formatNumber(board.pendingCredit) + ' 积分')
+  }
+  return (
+    <div style={quotaListStyle}>
+      <div style={rowStyle}>
+        <h3 style={quotaTitleStyle}>{'积分任务'}</h3>
+        <span style={bodyStyle}>
+          {(summaryParts.length > 0 ? summaryParts.join(' · ') + ' · ' : '')
+            + (growth.enabled ? '自动领取已开启' : '自动领取已关闭')}
+        </span>
+      </div>
+      <p style={descriptionStyle}>
+        {'成长中心的每日任务与自动化结果；积分和能量由插件自动领取，任务状态以成长中心为准。'}
+      </p>
+      {/*
+        * The board error replaces the list rather than annotating it: the host
+        * omits the board precisely when it cannot be read, so there is nothing
+        * to annotate, and an empty list beside an error would read as "no tasks
+        * left" — the opposite of the truth.
+        */}
+      {failed
+        ? <p style={errorStyle}>{'任务板读取失败：' + String(growth.boardError)}</p>
+        : board === undefined
+          ? <p style={descriptionStyle}>{'暂时读不到任务板。'}</p>
+          : <GrowthBoard board={board} />}
+      {growth.lastRun === undefined ? null : <GrowthLastRun run={growth.lastRun} />}
+    </div>
+  )
+}
+
 /** Render WorkBuddy sign-in state and credit as one expandable card. */
 export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
   const { t, scope, signedIn, variant, unified, defaultOpen } = props
@@ -2273,6 +2622,24 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                         * answer before the reference material below.
                         */}
                       {status.pool === undefined ? null : <PoolSection pool={status.pool} />}
+                      {/*
+                        * The growth board sits below the pool: it explains the
+                        * same credit figure, but it is the slower-moving of the
+                        * two (tasks change daily, pool health changes per
+                        * request), so it reads after the live state.
+                        *
+                        * Read through a widening cast because the status
+                        * document does not DECLARE this field yet: the host
+                        * emits it (`web-status.ts` spreads the growth object
+                        * into the signed-in document) and the type exists, but
+                        * `WorkBuddyWebStatus` never grew the property. The cast
+                        * is confined to this one read so the rest of the card
+                        * keeps full checking, and it disappears the moment the
+                        * field is added upstream — which is the fix, not this.
+                        */}
+                      {status.growth === undefined
+                        ? null
+                        : <GrowthSection growth={status.growth} />}
                       {status.probe === undefined ? null : (
                         <ProbeSection
                           probe={status.probe}

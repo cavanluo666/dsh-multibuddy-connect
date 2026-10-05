@@ -1402,6 +1402,51 @@ interface GrowthClaimSummary {
     message: string;
   }[];
 }
+/** How one streak tier stands. */
+type StreakTierStatus = 'locked' | 'claimable' | 'claimed' | 'unknown';
+/** One consecutive-login tier. */
+interface StreakTier {
+  /** Tier id, e.g. \`7\` or \`14\`. */
+  tier: string;
+  /** Consecutive days the tier requires. */
+  days: number;
+  credit: number;
+  energy: number;
+  /** Makeup cards the tier pays. */
+  cards: number;
+  /** Lottery draws the tier unlocks. */
+  chances: number;
+  status: StreakTierStatus;
+}
+/** The consecutive-login picture. */
+interface StreakStatus {
+  /** Consecutive days so far. */
+  days: number;
+  monthTotalDays: number;
+  /** The next tier's id, when one exists. */
+  nextTier?: string;
+  /** Days still needed for it. */
+  nextTierRemaining: number;
+  /** Makeup cards in hand. */
+  makeupCards: number;
+  tiers: readonly StreakTier[];
+}
+/** The buddy's travel state. */
+interface TravelStatus {
+  /** Upstream state word, e.g. \`idle\` or \`travelling\`. */
+  state: string;
+  /** The active trip's record id, needed to collect it. */
+  recordId: number;
+  /** Whether today's trips are used up. */
+  dailyLimitReached: boolean;
+  /** Credits the completed trip is worth. */
+  rewardCredit: number;
+}
+/** The buddy itself. */
+interface BuddyInfo {
+  instanceId: number;
+  name: string;
+}
 /**
  * The origin to address for a credential.
  *
@@ -1460,6 +1505,107 @@ declare class WorkBuddyGrowthClient {
    * @returns what the pass produced.
    */
   claimAll(credential: WorkBuddyCredential, codes: readonly string[]): Promise<GrowthClaimSummary>;
+  /**
+   * Send one growth request and return its \`data\` object.
+   *
+   * A second envelope reader exists because these endpoints are addressed the
+   * same way but answer with different payloads; routing every one through a
+   * single helper is what keeps the error handling identical across them.
+   *
+   * @param credential - the account.
+   * @param method - the HTTP method.
+   * @param path - the path on the growth origin, leading slash included.
+   * @param body - the JSON body, when the call takes one.
+   * @returns the envelope's \`data\` as a record.
+   */
+  private growthJson;
+  /**
+   * The consecutive-login picture.
+   *
+   * READ FIRST, REDEEM SECOND: a locked tier answers 403 from the redeem
+   * endpoint, which once stripped to an error is indistinguishable from a real
+   * failure. The tier's own status is the only honest answer to "is there
+   * anything to collect".
+   *
+   * @param credential - the account.
+   * @returns days, next tier, makeup cards, and each tier's state.
+   */
+  streakStatus(credential: WorkBuddyCredential): Promise<StreakStatus>;
+  /**
+   * Redeem one unlocked streak tier.
+   *
+   * The client token is the upstream's idempotency key, so a FRESH one per
+   * attempt is what keeps a retry from being read as a duplicate of the last.
+   *
+   * @param credential - the account.
+   * @param tier - the tier id.
+   */
+  redeemStreakTier(credential: WorkBuddyCredential, tier: string): Promise<void>;
+  /**
+   * How many lottery draws are available.
+   *
+   * @param credential - the account.
+   * @returns the draw count.
+   */
+  lotteryChances(credential: WorkBuddyCredential): Promise<number>;
+  /**
+   * Draw the lottery once.
+   *
+   * The prize payload's shape is set by the running campaign, so it is passed
+   * through rather than modelled — a model here would be wrong next month.
+   *
+   * @param credential - the account.
+   * @returns whatever the campaign returned.
+   */
+  lotteryDraw(credential: WorkBuddyCredential): Promise<unknown>;
+  /**
+   * The buddy profile, when the account has one.
+   *
+   * \`data.buddy\` arrives as null, absent, or an empty object depending on how
+   * far the account got; all three mean the same thing to a caller, so all three
+   * answer undefined.
+   *
+   * @param credential - the account.
+   * @returns the buddy, or undefined when none has been adopted.
+   */
+  buddyInfo(credential: WorkBuddyCredential): Promise<BuddyInfo | undefined>;
+  /** Agree to the buddy terms. Idempotent upstream. */
+  buddyAgree(credential: WorkBuddyCredential): Promise<void>;
+  /**
+   * Adopt the first buddy.
+   *
+   * Gated upstream on having reported activity that day: without it the answer
+   * is 400 "first_buddy task not completed yet". Thrown as-is so the caller can
+   * classify it as "not yet" rather than as a failure.
+   */
+  buddyAdoptFirst(credential: WorkBuddyCredential): Promise<void>;
+  /**
+   * The buddy's travel state.
+   *
+   * @param credential - the account.
+   * @returns the state, including the record id a claim needs.
+   */
+  travelStatus(credential: WorkBuddyCredential): Promise<TravelStatus>;
+  /**
+   * Send the buddy travelling.
+   *
+   * The location is fixed at 4: the four locations have identical reward and
+   * duration ranges, so there is nothing to choose between them.
+   *
+   * @param credential - the account.
+   */
+  travelDepart(credential: WorkBuddyCredential, locationId?: number): Promise<void>;
+  /**
+   * Collect an arrived trip.
+   *
+   * The record id comes from {@link travelStatus}; the upstream rejects a claim
+   * without it.
+   *
+   * @param credential - the account.
+   * @param recordId - the trip's record id.
+   * @returns the credits collected, 0 when the payload states none.
+   */
+  travelClaim(credential: WorkBuddyCredential, recordId: number): Promise<number>;
 }
 //#endregion
 //#region src/growth-scheduler.d.ts
@@ -1479,6 +1625,16 @@ interface GrowthAccountResult {
   inProgress: number;
   /** Claims still available but not collected. */
   claimable: number;
+  /** Streak tiers redeemed in this run. */
+  tiersRedeemed: number;
+  /** Lottery draws made in this run. */
+  draws: number;
+  /** What the draws paid, when the campaign states it. */
+  drawsCredit: number;
+  /** Credits the buddy's travel produced. */
+  travelCredit: number;
+  /** Whether a buddy was adopted in this run. */
+  buddyAdopted: boolean;
   failures: readonly string[];
   /** Set when the whole account failed (a dead credential, a network fault). */
   error?: string;

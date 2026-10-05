@@ -267,6 +267,62 @@ export interface WorkBuddyWebPoolAccount {
   lastSuccessAtMs?: number
 }
 
+/** One task on the growth board, as the card lists it. */
+export interface WorkBuddyWebGrowthTask {
+  code: string
+  title: string
+  description?: string
+  credit: number
+  energy: number
+  status: 'claimable' | 'in_progress' | 'not_accepted' | 'claimed' | 'locked'
+}
+
+/** The growth board as the card renders it. */
+export interface WorkBuddyWebGrowthBoard {
+  tasks: readonly WorkBuddyWebGrowthTask[]
+  /** Rewards that can be collected now. */
+  claimable: number
+  /** Tasks waiting on real product use. */
+  inProgress: number
+  /** Credits still on the table. */
+  pendingCredit: number
+  /** Energy still on the table. */
+  pendingEnergy: number
+}
+
+/** The growth automation's last run, for the card. */
+export interface WorkBuddyWebGrowthRun {
+  ranAtMs: number
+  manual: boolean
+  credit: number
+  energy: number
+  accounts: readonly {
+    label: string
+    accepted: number
+    claimed: number
+    credit: number
+    energy: number
+    tiersRedeemed: number
+    draws: number
+    travelCredit: number
+    buddyAdopted: boolean
+    failures: readonly string[]
+    error?: string
+  }[]
+}
+
+/** Everything the growth section of the card needs. */
+export interface WorkBuddyWebGrowth {
+  /** Whether the automation switch is on. */
+  enabled: boolean
+  /** The task board for the account currently in effect. */
+  board?: WorkBuddyWebGrowthBoard
+  /** The most recent automation run, when there has been one. */
+  lastRun?: WorkBuddyWebGrowthRun
+  /** Why the board is unavailable, when it is. */
+  boardError?: string
+}
+
 /**
  * The account pool's state for one variant.
  *
@@ -325,6 +381,14 @@ export type WorkBuddyWebStatus =
      * are sharing the load, and which of them is resting.
      */
     pool?: WorkBuddyWebPool
+    /**
+     * The growth centre: daily tasks, their rewards, and what the automation
+     * collected on its last run.
+     *
+     * Carried on the SIGNED-IN document because a board read needs a
+     * credential; a signed-out card has nothing to show here.
+     */
+    growth?: WorkBuddyWebGrowth
     /**
      * Daily check-in status record for this variant.
      */

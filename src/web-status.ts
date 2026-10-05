@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebGrowth, WorkBuddyWebModelBadge, WorkBuddyWebPool, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -55,6 +55,14 @@ export interface WorkBuddyStatusRouteOptions {
    * and so a single-account install simply reports no pool.
    */
   pool?: () => WorkBuddyWebPool | undefined
+  /**
+   * The growth centre's state for the card.
+   *
+   * A LIVE READ rather than a cached snapshot: the board changes as the user
+   * uses the product (a task's progress lands, a reward becomes claimable), and
+   * the card's refresh is what should pick that up.
+   */
+  growth?: () => Promise<WorkBuddyWebGrowth> | WorkBuddyWebGrowth
   /**
    * Whether the upstream has reported an unactivated trial for this variant.
    * Optional so the route keeps working without a shim.
@@ -133,6 +141,17 @@ export async function workBuddyWebStatus(
   // leaves the second call's type as `T | undefined`, so the spread widens the
   // whole document and the union stops narrowing.
   const pool = deps.pool?.()
+  // Awaited here rather than in the card: the board needs the credential, which
+  // only the host holds. A failure is reported INSIDE the section so the rest of
+  // the document still renders.
+  let growth: WorkBuddyWebGrowth | undefined
+  if (deps.growth !== undefined) {
+    try {
+      growth = await deps.growth()
+    } catch (error: unknown) {
+      growth = { enabled: false, boardError: error instanceof Error ? error.message : String(error) }
+    }
+  }
   const status: WorkBuddyWebStatus = {
     status: 'signed-in',
     ...authStatus.nickname === undefined ? {} : { nickname: authStatus.nickname },
@@ -143,6 +162,7 @@ export async function workBuddyWebStatus(
     // switching accounts, and omitting it here made both actions unreachable.
     ...deps.loginKey === undefined ? {} : { loginKey: deps.loginKey },
     ...pool === undefined ? {} : { pool },
+    ...growth === undefined ? {} : { growth },
   }
   // Model facts ride the signed-in document so the card can show rates,
   // promos, and context capacity without touching the Models picker. The rate
