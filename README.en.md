@@ -34,6 +34,10 @@ model picker: Trae · Qoder · MiMo · Loomy · Command Code Go. See "Known gaps
 - GitHub: <https://github.com/cavanluo666>
 - Mirror (Gitee): <https://gitee.com/luo-com-cn/dsh-multibuddy-connect>
 
+> The Gitee repository is a **read-only automatic mirror** (Gitee's own mirror
+> feature pulls from GitHub). Please file issues and PRs on
+> [GitHub](https://github.com/cavanluo666/dsh-multibuddy-connect).
+
 ## Derivative work
 
 This plugin derives from [dsh-workbuddy-connect](https://github.com/masknull/dsh-workbuddy-connect)

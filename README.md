@@ -41,6 +41,9 @@
 - GitHub：<https://github.com/cavanluo666>
 - 仓库镜像（Gitee）：<https://gitee.com/luo-com-cn/dsh-multibuddy-connect>
 
+> Gitee 是**自动同步的只读镜像**（由 Gitee 官方的仓库镜像功能拉取）。
+> 提交 Issue 与 PR 请到 [GitHub](https://github.com/cavanluo666/dsh-multibuddy-connect)。
+
 欢迎反馈问题、提交 PR，或在 Bilibili 私信交流。
 
 ---
