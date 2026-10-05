@@ -42,6 +42,7 @@ import { UsageLedger } from './usage/ledger.ts'
 import { UsageService } from './usage/service.ts'
 import { createUsageKey, registerUsageRoute } from './usage-route.ts'
 import { createBackendsKey, registerBackendsRoute } from './backends/route.ts'
+import { GrowthScheduler, type GrowthTarget } from './growth-scheduler.ts'
 import { createOpenAiCompatRoute } from './backends/openai-compat.ts'
 import { WORKBUDDY_CONFIG_ENTRY_ID } from './config-entry.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
@@ -89,6 +90,26 @@ export {
   WORKBUDDY_VARIANTS,
   type WorkBuddyVariant,
 } from './variants.ts'
+
+// ---- Growth centre automation ---------------------------------------------
+export {
+  growthOrigin,
+  WorkBuddyGrowthClient,
+  type GrowthBoard,
+  type GrowthClaim,
+  type GrowthClaimSummary,
+  type GrowthTask,
+  type GrowthTaskStatus,
+} from './growth.ts'
+export {
+  GROWTH_TICK_MS,
+  GrowthScheduler,
+  growthLedgerPath,
+  type GrowthAccountResult,
+  type GrowthRunSummary,
+  type GrowthSchedulerOptions,
+  type GrowthTarget,
+} from './growth-scheduler.ts'
 
 // ---- Multi-account pool ---------------------------------------------------
 //
@@ -397,6 +418,14 @@ export interface Config {
   /** Claim the international account's daily benefit automatically when DSH starts. */
   autoCheckInAI?: boolean
   /**
+   * Run the daily growth automation (enrol in tasks, collect rewards).
+   *
+   * Separate from the check-in toggles because it is a different kind of action:
+   * those claim one known daily benefit, this walks a task board and performs
+   * write calls against a gift endpoint.
+   */
+  growthAutomation?: boolean
+  /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
    * upstream family; the floor guards against a typo hammering the billing
@@ -500,6 +529,18 @@ const QUOTA_POLL_FIELD = volatileField(z.number()
   .min(QUOTA_POLL_MIN_MS)
   .description('Sidebar quota card refresh interval in milliseconds (default 300000, minimum 60000)'))
 
+/**
+ * Whether the daily growth automation runs on its own.
+ *
+ * Defaults ON, by the user's ruling, with a card switch to turn it off. The
+ * default is defensible because every action is idempotent, the ledger keeps it
+ * to one pass per account per day, and it touches ONLY the growth endpoints —
+ * never the chat path other work depends on.
+ */
+const GROWTH_AUTOMATION_FIELD = volatileField(z.boolean()
+  .default(true)
+  .description('Run the daily task/reward automation automatically'))
+
 export const Config: z<Config> = z.object({
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
@@ -510,6 +551,7 @@ export const Config: z<Config> = z.object({
   autoCheckInCN: AUTO_CHECK_IN_FIELD,
   autoCheckInAI: AUTO_CHECK_IN_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
+  growthAutomation: GROWTH_AUTOMATION_FIELD,
 })
 
 /**
@@ -562,6 +604,7 @@ export const QUOTA_SECTION_KEYS = [
   'sidebarQuotaAI',
   'autoCheckInCN',
   'autoCheckInAI',
+  'growthAutomation',
   'quotaPollMs',
 ] as const satisfies readonly (keyof Config)[]
 
@@ -1941,6 +1984,37 @@ export function apply(ctx: Context, config: Config): void {
   const usageKeys = { get action(): string { return (usageProcessKey ??= createUsageKey()) } }
 
   /**
+   * The daily growth automation.
+   *
+   * Given the merged backends' ACCOUNT POOL as its source of accounts, so it
+   * acts for every signed-in WorkBuddy account rather than only the first. Its
+   * own module and its own ledger: nothing here can reach the chat path, which
+   * is the property that lets this ship while other work depends on the plugin.
+   */
+  const growthScheduler = new GrowthScheduler({
+    targets: (): readonly GrowthTarget[] => {
+      const targets: GrowthTarget[] = []
+      for (const runtime of runtimes) {
+        for (const account of runtime.accounts.all()) {
+          targets.push({
+            id: runtime.variant.id + '/' + account.record.id,
+            label: runtime.variant.displayName + ' · ' + account.record.label,
+            credential: () => account.store.resolve(),
+          })
+        }
+      }
+      return targets
+    },
+    // Read live, so the card's switch takes effect without a restart.
+    isEnabled: () => readField(current(), 'growthAutomation') !== false,
+    onRun: summary => {
+      ctx.logger.info('dsh-workbuddy-connect: growth automation collected '
+        + String(summary.credit) + ' credit, ' + String(summary.energy) + ' energy across '
+        + String(summary.accounts.length) + ' account(s)')
+    },
+  })
+
+  /**
    * Rebuild the merged backend set and republish their providers.
    *
    * Called after a configuration write, because a stored account only takes
@@ -1994,8 +2068,18 @@ export function apply(ctx: Context, config: Config): void {
     }
   })()
 
+  // Start the hourly growth automation, and give it a first pass shortly after
+  // boot. The delay is deliberate: startup already resolves accounts and
+  // registers providers, and firing a burst of writes into that window would
+  // compete with it for no benefit — the rewards do not expire in 30 seconds.
+  growthScheduler.start()
+  const growthKickoff = setTimeout(() => { void growthScheduler.sweep() }, 30_000)
+  growthKickoff.unref?.()
+  timers.push(growthKickoff)
+
   ctx.effect(() => () => {
     stopped = true
+    growthScheduler.dispose()
     checkInScheduler.dispose()
     for (const timer of timers) clearInterval(timer)
     timers.length = 0

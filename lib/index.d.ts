@@ -1337,6 +1337,237 @@ declare class WorkBuddyProbeService {
   probe(modelId: string, manualConsent?: boolean): Promise<WorkBuddyProbeStatus>;
 }
 //#endregion
+//#region src/growth.d.ts
+/** How one task stands, as the card renders it. */
+type GrowthTaskStatus =
+/** Rewards can be collected now. */
+'claimable' |
+/** Enrolled, but its progress is not met yet. */
+'in_progress' |
+/** Not enrolled; accepting it is the first step. */
+'not_accepted' |
+/** Already collected. */
+'claimed' |
+/** Gated behind something else. */
+'locked';
+/** One task on the board. */
+interface GrowthTask {
+  code: string;
+  title: string;
+  description?: string;
+  /** Credits the reward pays. */
+  credit: number;
+  /** Energy the reward pays. */
+  energy: number;
+  /** Whether this task grants a Buddy. */
+  buddy: boolean;
+  status: GrowthTaskStatus;
+  /** Whether the upstream says a reward is attached at all. */
+  hasReward: boolean;
+}
+/** A task board read. */
+interface GrowthBoard {
+  tasks: readonly GrowthTask[];
+  /** Tasks whose reward can be collected right now. */
+  claimable: number;
+  /** Tasks not yet enrolled. */
+  acceptable: number;
+  /** Credits still on the table for this account. */
+  pendingCredit: number;
+  /** Energy still on the table. */
+  pendingEnergy: number;
+}
+/** One claim's outcome. */
+interface GrowthClaim {
+  code: string;
+  credit: number;
+  energy: number;
+  /**
+   * Whether the reward had already been collected.
+   *
+   * Reported rather than hidden: the upstream answers success with zero credit
+   * for a repeat claim, and calling that a fresh payout would make the today's
+   * earnings figure grow every time the button was pressed.
+   */
+  alreadyClaimed: boolean;
+}
+/** What a claim pass produced. */
+interface GrowthClaimSummary {
+  claimed: readonly GrowthClaim[];
+  credit: number;
+  energy: number;
+  /** Failures, so a partial pass is reported rather than silently short. */
+  failures: readonly {
+    code: string;
+    message: string;
+  }[];
+}
+/**
+ * The origin to address for a credential.
+ *
+ * Always the WorkBuddy web origin, NOT the credential's own domain: measured
+ * behaviour is that a CodeBuddy-domain credential is served fine here, and the
+ * domain in the credential names the CHAT gateway, which does not host the
+ * growth centre.
+ *
+ * @returns the origin, without a trailing slash.
+ */
+declare function growthOrigin(): string;
+/**
+ * The growth centre's client.
+ *
+ * @param fetchImpl - the fetch to use; injected so tests need no network.
+ */
+declare class WorkBuddyGrowthClient {
+  private readonly fetchImpl;
+  constructor(fetchImpl?: typeof fetch);
+  /**
+   * Read the task board. READ-ONLY.
+   *
+   * @param credential - the account to read for.
+   * @returns the board, with its totals.
+   */
+  listTasks(credential: WorkBuddyCredential): Promise<GrowthBoard>;
+  /**
+   * Enrol in tasks by code. Idempotent: the upstream answers success for an
+   * already-accepted task, so a replay is safe.
+   *
+   * @param credential - the account.
+   * @param codes - the task codes to accept.
+   */
+  acceptTasks(credential: WorkBuddyCredential, codes: readonly string[]): Promise<void>;
+  /**
+   * Collect one task's reward. Idempotent: a repeat answers already_claimed.
+   *
+   * @param credential - the account.
+   * @param code - the task code; it rides the PATH.
+   * @returns what the claim paid.
+   */
+  claimTask(credential: WorkBuddyCredential, code: string): Promise<GrowthClaim>;
+  /**
+   * Collect every eligible reward, one at a time.
+   *
+   * SEQUENTIAL on purpose: these are write calls against a rate-limited gift
+   * endpoint, and a burst is the pattern that gets an account throttled — which,
+   * now that accounts are pooled, would park the whole account rather than one
+   * task.
+   *
+   * A failure on one task does NOT abort the pass: the rest are still claimable,
+   * and the failure is reported alongside the successes.
+   *
+   * @param credential - the account.
+   * @param codes - the task codes to claim.
+   * @returns what the pass produced.
+   */
+  claimAll(credential: WorkBuddyCredential, codes: readonly string[]): Promise<GrowthClaimSummary>;
+}
+//#endregion
+//#region src/growth-scheduler.d.ts
+/** How often the automation re-checks, once a day has been started. */
+declare const GROWTH_TICK_MS: number;
+/** What one account's run produced. */
+interface GrowthAccountResult {
+  accountId: string;
+  label: string;
+  /** Tasks newly enrolled in this run. */
+  accepted: number;
+  /** Rewards collected in this run. */
+  claimed: number;
+  credit: number;
+  energy: number;
+  /** Tasks still waiting on real activity. */
+  inProgress: number;
+  /** Claims still available but not collected. */
+  claimable: number;
+  failures: readonly string[];
+  /** Set when the whole account failed (a dead credential, a network fault). */
+  error?: string;
+}
+/** The whole run's outcome. */
+interface GrowthRunSummary {
+  ranAtMs: number;
+  accounts: readonly GrowthAccountResult[];
+  credit: number;
+  energy: number;
+  /** Whether the run was started by hand rather than by the timer. */
+  manual: boolean;
+}
+/** One account the automation can act for. */
+interface GrowthTarget {
+  id: string;
+  label: string;
+  /** Resolve the credential at call time, so a refresh is picked up. */
+  credential: () => Promise<WorkBuddyCredential>;
+}
+/** Constructor dependencies. */
+interface GrowthSchedulerOptions {
+  /** The accounts to act for; re-read per run so the pool's changes apply. */
+  targets: () => readonly GrowthTarget[];
+  /** Whether automation is switched on. */
+  isEnabled: () => boolean;
+  /** The client; injected so tests need no network. */
+  client?: WorkBuddyGrowthClient;
+  /** Notified after each run, for the card. */
+  onRun?: (summary: GrowthRunSummary) => void;
+  /** Injected clock. */
+  now?: () => number;
+  /** Injected sleep, so tests do not wait. */
+  sleep?: (ms: number) => Promise<void>;
+}
+/** Where the automation ledger lives. */
+declare function growthLedgerPath(): string;
+/**
+ * The daily automation.
+ *
+ * The ledger is keyed by DAY rather than by a boolean, so a machine that was off
+ * for a week does not run seven times on the day it returns.
+ */
+declare class GrowthScheduler {
+  private readonly options;
+  private readonly client;
+  private readonly now;
+  private readonly sleep;
+  private days;
+  private loaded;
+  private timer;
+  private disposed;
+  /** Guards against a manual run overlapping the timer's. */
+  private running;
+  /** The most recent run, for the card. */
+  private lastRun;
+  constructor(options: GrowthSchedulerOptions);
+  /** Start the hourly check. */
+  start(): void;
+  /** Stop the timer. */
+  dispose(): void;
+  /** The most recent run, when there has been one. */
+  lastSummary(): GrowthRunSummary | undefined;
+  /**
+   * Whether this account has already been automated today.
+   *
+   * @param id - the account id.
+   * @returns true when today's run is done.
+   */
+  alreadyRanToday(id: string): boolean;
+  /**
+   * Run one pass, unless it is off, already running, or already done today.
+   *
+   * Every failure is contained: one account failing leaves the others to run,
+   * and the whole pass never throws.
+   *
+   * @param manual - true when a user pressed the button, which bypasses the
+   *   once-a-day rule so the button always does something observable.
+   * @returns the run, or undefined when nothing ran.
+   */
+  sweep(manual?: boolean): Promise<GrowthRunSummary | undefined>;
+  /** Run one account: enrol, then collect. */
+  private runAccount;
+  /** Read the ledger once. */
+  private load;
+  /** Persist the ledger. */
+  private flush;
+}
+//#endregion
 //#region src/account-manager.d.ts
 /** How one credential store is built; supplied by the shell. */
 interface AccountManagerOptions {
@@ -3076,6 +3307,14 @@ interface Config {
   /** Claim the international account's daily benefit automatically when DSH starts. */
   autoCheckInAI?: boolean;
   /**
+   * Run the daily growth automation (enrol in tasks, collect rewards).
+   *
+   * Separate from the check-in toggles because it is a different kind of action:
+   * those claim one known daily benefit, this walks a task board and performs
+   * write calls against a gift endpoint.
+   */
+  growthAutomation?: boolean;
+  /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
    * upstream family; the floor guards against a typo hammering the billing
@@ -3095,7 +3334,7 @@ declare const QUOTA_POLL_MIN_MS = 60000;
 declare const Config: z<Config>;
 declare const CN_SECTION_KEYS: readonly ["probeConsent", "disabledModelsCN"];
 declare const AI_SECTION_KEYS: readonly ["useMaximumContextWindow", "disabledModelsAI"];
-declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaAI", "autoCheckInCN", "autoCheckInAI", "quotaPollMs"];
+declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaAI", "autoCheckInCN", "autoCheckInAI", "growthAutomation", "quotaPollMs"];
 /**
  * Start both variants: their loopback endpoints, the `workbuddy` and
  * `workbuddy-ai` providers, their configuration cards, and their
@@ -3108,4 +3347,4 @@ declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaAI", 
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_SECTION_KEYS, AI_VARIANT, type AccountManagerOptions, type AppVersionInfo, type AttemptOutcome, BACKEND_ENTRIES, type BackendAccount, BackendAccountRegistry, type BackendAdapter, type BackendAuthKind, type BackendAvailability, type BackendBrand, type BackendDescriptor, type BackendEntry, type BackendId, type BackendImpl, type BackendLoadFailure, type BackendLoadResult, type BackendModelInfo, type BackendQuota, BackendUnavailable, BaseBackendAdapter, CLINE_DESCRIPTOR, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, COMMANDCODE_DESCRIPTOR, type ChatIdentity, Config, DEFAULT_WINDOW_DAYS, type DiscoveredAccount, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, type FailoverOptions, type FailoverResult, LOGIN_PENDING_CODE, LOOMY_DESCRIPTOR, type LedgerRow, MIMO_DESCRIPTOR, PROBE_EFFORT_CANDIDATES, type PooledAccount, type PooledAccountRecord, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type QuotaPackage, type QuotaReading, type ResolveChatIdentityOptions, type SeedAccount, type StoredAccount, type TokenBuckets, USAGE_WINDOW_CHOICES, type UpstreamErrorKind, type UsageAccountInput, type UsageAccountRow, type UsageBackendTotal, type UsageDayPoint, UsageLedger, type UsageRouteOptions, UsageService, type UsageServiceOptions, type UsageSummary, type UsageWebAccount, type UsageWebAction, type UsageWebActionResult, type UsageWebBackendTotal, type UsageWebDay, type UsageWebDocument, type UsageWebQuota, type UsageWebTokens, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_USAGE_ACTION_PATH, WORKBUDDY_USAGE_PATH, WORKBUDDY_VARIANTS, WorkBuddyAccountManager, WorkBuddyAccountPool, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, backendAccountsPath, buildUsageSummary, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, cooldownMsFor, createClineBackend, createCommandCodeBackend, createLoginKey, createLoomyBackend, createMiMoBackend, createRegistry, createUsageKey, createWorkBuddyAdapter, createWorkBuddyShim, dailySeries, fallbackChatIdentity, fingerprintModel, identityOf, inject, installedAppVersion, isAccountScoped, isHeartbeatProcessAlive, loadBackends, localDay, maskSecret, messageOf, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseUsageAction, parseWorkBuddyAuth, poolAccountPath, poolStatePath, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerUsageRoute, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, seedsFor, totalTokens, usageDocumentHandler, usageLedgerPath, validAppVersion, validCliVersion, variantFor, withFailover, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
+export { AI_SECTION_KEYS, AI_VARIANT, type AccountManagerOptions, type AppVersionInfo, type AttemptOutcome, BACKEND_ENTRIES, type BackendAccount, BackendAccountRegistry, type BackendAdapter, type BackendAuthKind, type BackendAvailability, type BackendBrand, type BackendDescriptor, type BackendEntry, type BackendId, type BackendImpl, type BackendLoadFailure, type BackendLoadResult, type BackendModelInfo, type BackendQuota, BackendUnavailable, BaseBackendAdapter, CLINE_DESCRIPTOR, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, COMMANDCODE_DESCRIPTOR, type ChatIdentity, Config, DEFAULT_WINDOW_DAYS, type DiscoveredAccount, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, type FailoverOptions, type FailoverResult, GROWTH_TICK_MS, type GrowthAccountResult, type GrowthBoard, type GrowthClaim, type GrowthClaimSummary, type GrowthRunSummary, GrowthScheduler, type GrowthSchedulerOptions, type GrowthTarget, type GrowthTask, type GrowthTaskStatus, LOGIN_PENDING_CODE, LOOMY_DESCRIPTOR, type LedgerRow, MIMO_DESCRIPTOR, PROBE_EFFORT_CANDIDATES, type PooledAccount, type PooledAccountRecord, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type QuotaPackage, type QuotaReading, type ResolveChatIdentityOptions, type SeedAccount, type StoredAccount, type TokenBuckets, USAGE_WINDOW_CHOICES, type UpstreamErrorKind, type UsageAccountInput, type UsageAccountRow, type UsageBackendTotal, type UsageDayPoint, UsageLedger, type UsageRouteOptions, UsageService, type UsageServiceOptions, type UsageSummary, type UsageWebAccount, type UsageWebAction, type UsageWebActionResult, type UsageWebBackendTotal, type UsageWebDay, type UsageWebDocument, type UsageWebQuota, type UsageWebTokens, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_USAGE_ACTION_PATH, WORKBUDDY_USAGE_PATH, WORKBUDDY_VARIANTS, WorkBuddyAccountManager, WorkBuddyAccountPool, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, WorkBuddyGrowthClient, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, backendAccountsPath, buildUsageSummary, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, cooldownMsFor, createClineBackend, createCommandCodeBackend, createLoginKey, createLoomyBackend, createMiMoBackend, createRegistry, createUsageKey, createWorkBuddyAdapter, createWorkBuddyShim, dailySeries, fallbackChatIdentity, fingerprintModel, growthLedgerPath, growthOrigin, identityOf, inject, installedAppVersion, isAccountScoped, isHeartbeatProcessAlive, loadBackends, localDay, maskSecret, messageOf, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseUsageAction, parseWorkBuddyAuth, poolAccountPath, poolStatePath, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerUsageRoute, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, seedsFor, totalTokens, usageDocumentHandler, usageLedgerPath, validAppVersion, validCliVersion, variantFor, withFailover, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
