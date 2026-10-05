@@ -34,8 +34,18 @@ const MAX_BODY_BYTES = 4096
 
 /** Constructor dependencies. */
 export interface UsageRouteOptions {
-  /** The service building the document. */
-  service: () => UsageService
+  /**
+   * The service building the document, or undefined while it is still being
+   * assembled.
+   *
+   * A getter rather than a value because registration happens as soon as the
+   * webServer service is available, while the service itself is built by an
+   * asynchronous startup step that loads the ledger. Resolving per request is
+   * what lets the route exist from the first moment without either blocking
+   * startup on the filesystem or pinning a stale service across a fiber
+   * reload.
+   */
+  service: () => UsageService | undefined
   /** Route path for the read document; defaults to the plugin's own. */
   path?: string
   /** Route path for the write action; defaults to the plugin's own. */
@@ -120,40 +130,111 @@ export async function usageDocumentHandler(service: UsageService, res: ServerRes
 /**
  * Mount both usage routes on the host's web server.
  *
- * Registers nothing when the web server service is absent — a headless profile
- * serves no browser, and refusing to start there would make the whole plugin
- * unusable over a feature the profile cannot use.
+ * Follows the plugin's existing route convention exactly, because deviating
+ * from it fails SILENTLY: routes are registered through
+ * `ctx.webServer.register({ kind, path, handler })`, and the handler owns the
+ * method check. The first version of this function instead reached for
+ * `webServer.get()` / `webServer.post()` — methods that do not exist on that
+ * service — so every call was an optional call on undefined, no route was ever
+ * mounted, and the browser's fetch came back 404 while the build, the types,
+ * and the tests all stayed green. Nothing but a real request could reveal it.
  *
- * @param ctx - the plugin context.
- * @param options - the service and optional path overrides.
- * @returns the release functions, one per mounted route.
+ * Registration is wrapped in `ctx.effect` so the disposer runs when the fiber
+ * unwinds. The caller must already have injected `webServer`, which is what
+ * makes `ctx.webServer` resolvable here.
+ *
+ * @param ctx - a context that has injected the webServer service.
+ * @param options - the service getter and optional path overrides.
  */
-export function registerUsageRoute(ctx: Context, options: UsageRouteOptions): (() => void)[] {
-  const webServer = ctx.get('webServer') as { get?: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => () => void; post?: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => () => void } | undefined
-  if (webServer === undefined) return []
-  const releases: (() => void)[] = []
+export function registerUsageRoute(ctx: Context, options: UsageRouteOptions): void {
   const readPath = options.path ?? WORKBUDDY_USAGE_PATH
   const writePath = options.actionPath ?? WORKBUDDY_USAGE_ACTION_PATH
 
-  const readRelease = webServer.get?.(readPath, (req, res) => {
-    if (!readable(req)) {
-      json(res, 403, { message: 'forbidden' })
-      return
+  ctx.effect(() => {
+    const dispose = ctx.webServer.register({
+      kind: 'exact',
+      path: readPath,
+      handler: usageDocumentRoute(options),
+    })
+    return () => {
+      dispose()
     }
-    void usageDocumentHandler(options.service(), res)
-  })
-  if (readRelease !== undefined) releases.push(readRelease)
+  }, 'dsh-multibuddy-connect: usage document route')
 
-  const writeRelease = webServer.post?.(writePath, (req, res) => {
+  ctx.effect(() => {
+    const dispose = ctx.webServer.register({
+      kind: 'exact',
+      path: writePath,
+      handler: usageActionRoute(options),
+    })
+    return () => {
+      dispose()
+    }
+  }, 'dsh-multibuddy-connect: usage action route')
+}
+
+/**
+ * The read route's handler.
+ *
+ * Owns the method check because the web server dispatches by PATH alone — a
+ * POST to this path must be refused here rather than by the router.
+ *
+ * @param options - the service getter.
+ * @returns the node request handler.
+ */
+export function usageDocumentRoute(options: UsageRouteOptions): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
     void (async (): Promise<void> => {
+      if (req.method !== 'GET') {
+        json(res, 405, { message: 'method not allowed' })
+        return
+      }
       if (!readable(req)) {
         json(res, 403, { message: 'forbidden' })
         return
       }
       const service = options.service()
-      const key = service.actionKey()
+      if (service === undefined) {
+        // The route exists before the ledger has finished loading. Saying so is
+        // better than a 404, which the page would report as "the plugin is not
+        // mounted" — a wrong diagnosis while startup is still in flight.
+        json(res, 503, { message: 'usage service is still starting' })
+        return
+      }
+      await usageDocumentHandler(service, res)
+    })()
+  }
+}
+
+/**
+ * The write route's handler.
+ *
+ * Two guards besides the method check, because a state-changing route must not
+ * be reachable by the same unauthenticated GET a page can be tricked into
+ * issuing: the loopback Host/Origin pair, then the in-process key the document
+ * handed the browser.
+ *
+ * @param options - the service getter.
+ * @returns the node request handler.
+ */
+export function usageActionRoute(options: UsageRouteOptions): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    void (async (): Promise<void> => {
+      if (req.method !== 'POST') {
+        json(res, 405, { message: 'method not allowed' })
+        return
+      }
+      if (!readable(req)) {
+        json(res, 403, { message: 'forbidden' })
+        return
+      }
+      const service = options.service()
+      if (service === undefined) {
+        json(res, 503, { message: 'usage service is still starting' })
+        return
+      }
       const presented = req.headers['x-workbuddy-key']
-      if (!keyMatches(key, Array.isArray(presented) ? presented[0] : presented)) {
+      if (!keyMatches(service.actionKey(), Array.isArray(presented) ? presented[0] : presented)) {
         json(res, 403, { message: 'forbidden' })
         return
       }
@@ -184,8 +265,5 @@ export function registerUsageRoute(ctx: Context, options: UsageRouteOptions): ((
       }
       json(res, result.ok ? 200 : 500, result)
     })()
-  })
-  if (writeRelease !== undefined) releases.push(writeRelease)
-
-  return releases
+  }
 }

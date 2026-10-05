@@ -186,10 +186,10 @@ export function commandCodeCatalogPath(): string {
 }
 
 /**
- * Model ids the Go plan includes that carry NO \`-free\` suffix.
+ * Model ids the Go plan includes that carry NO `-free` suffix.
  *
  * The listing endpoint is unauthenticated and discloses nothing about plans,
- * so membership cannot be read off it. The \`-free\` suffix covers the free
+ * so membership cannot be read off it. The `-free` suffix covers the free
  * tier, but the Go plan also grants a handful of PAID-tier models — the
  * upstream project names GPT-5.6 Luna, Grok 4.5, and Muse Spark 1.2
  * Contributor — and filtering on the suffix alone silently removes every one
@@ -197,7 +197,7 @@ export function commandCodeCatalogPath(): string {
  * than the subscription the user paid for, with no visible reason why.
  *
  * These ids are therefore listed EXPLICITLY rather than inferred. Matching is
- * on the id's leading segment so a dated variant (\`gpt-5.6-luna-2026-01-01\`)
+ * on the id's leading segment so a dated variant (`gpt-5.6-luna-2026-01-01`)
  * still resolves to its family entry.
  *
  * The cost of this list is that a NEW paid Go model stays invisible until the
@@ -215,7 +215,7 @@ const GO_PLAN_MODEL_FAMILIES: readonly string[] = [
 /**
  * Whether a model id belongs to the Go plan.
  *
- * True for the free tier (the \`-free\` suffix) and for the paid families the
+ * True for the free tier (the `-free` suffix) and for the paid families the
  * plan explicitly grants (see {@link GO_PLAN_MODEL_FAMILIES}).
  *
  * @param id - the wire model id.

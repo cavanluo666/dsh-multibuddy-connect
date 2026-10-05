@@ -2,7 +2,7 @@
  * CodeBuddy (腾讯) — a desktop-adoption backend.
  *
  * The CodeBuddy desktop client / official extension keeps its sign-in in a
- * \`*.info\` document under CodeBuddyExtension's data directory. That file is
+ * `*.info` document under CodeBuddyExtension's data directory. That file is
  * read here, READ-ONLY. This is the one place where the read-only rule is not
  * merely a matter of correctness but of NOT BREAKING THE USER'S APP: the
  * original plugin refreshes an expiring access token and writes the new one
@@ -10,11 +10,11 @@
  * write path into another application's credential store — a corrupt or racing
  * write signs the desktop app out, which is a far worse outcome than this
  * adapter reporting the account as unusable. So an expired token is REPORTED
- * (\`usable: false\`) and never repaired; signing in again in the desktop app
+ * (`usable: false`) and never repaired; signing in again in the desktop app
  * fixes it, and nothing needs reinstalling.
  *
  * CodeBuddy and WorkBuddy share Tencent's account system, and the original
- * plugin deliberately reads whichever \`*.info\` it finds first rather than
+ * plugin deliberately reads whichever `*.info` it finds first rather than
  * insisting on one product's directory. That behaviour is kept: the account is
  * adopted from the local desktop login, whichever of the two placed it there.
  *
@@ -24,8 +24,8 @@
  *
  * reportsQuota is false, and that is a finding rather than a default. The
  * original implementation exposes exactly one authenticated backend call
- * (\`POST /v2/chat/completions\`); the only other endpoint it knows is
- * \`/v2/plugin/auth/token/refresh\`, which mints tokens and reports no balance.
+ * (`POST /v2/chat/completions`); the only other endpoint it knows is
+ * `/v2/plugin/auth/token/refresh`, which mints tokens and reports no balance.
  * Quota reaches the client solely as a mid-request business error (code 14012
  * "企业版额度不足"), i.e. the vendor tells you when you have none left, never
  * how much remains. Charting that would mean inventing a number, so the
@@ -77,7 +77,7 @@ const EXTENSION_DATA_DIR = 'CodeBuddyExtension'
  * Default per-request output cap, mirroring the original plugin.
  *
  * A product manifest normally states the real value per model; this is the
- * fallback for the built-in \`auto\` entry and for manifests that omit it.
+ * fallback for the built-in `auto` entry and for manifests that omit it.
  */
 const DEFAULT_MAX_TOKENS = 64_000
 
@@ -87,7 +87,7 @@ const DEFAULT_CONTEXT_WINDOW = 1_000_000
 /**
  * Reasoning efforts the CodeBuddy backend accepts.
  *
- * Declared on every model because the wire request carries \`reasoning_effort\`
+ * Declared on every model because the wire request carries `reasoning_effort`
  * for all of them — the backend streams reasoning regardless of the model name,
  * so gating this per model would invent a distinction the vendor does not make.
  */
@@ -97,7 +97,7 @@ const REASONING_EFFORTS: readonly string[] = ['off', 'low', 'high', 'max']
  * Built-in roster, used when no official client manifest can be read.
  *
  * Deliberately minimal, for the same reason the original plugin keeps only
- * \`auto\`: it is the one id guaranteed to survive a subscription change. A
+ * `auto`: it is the one id guaranteed to survive a subscription change. A
  * longer hand-written list would go stale silently and then fail every turn
  * that picked an id the account no longer has.
  */
@@ -135,10 +135,10 @@ export const CODEBUDDY_DESCRIPTOR: BackendDescriptor = {
  * Candidate auth directories, computed fresh on every call.
  *
  * Read lazily rather than captured at module load so a test (or a user) that
- * sets \`LOCALAPPDATA\` before the first probe still gets the right answer.
+ * sets `LOCALAPPDATA` before the first probe still gets the right answer.
  *
  * All three platform layouts are enumerated rather than branching on
- * \`process.platform\`, matching the sibling Loomy and MiMo backends: a moved or
+ * `process.platform`, matching the sibling Loomy and MiMo backends: a moved or
  * cross-platform-synced install is then still found, and there is no branch to
  * get wrong.
  *
@@ -172,7 +172,7 @@ export function codeBuddyAuthDirs(): readonly string[] {
  * "the client is not installed" versus "the client is installed but signed
  * out". Only the second may be reported as signed-out.
  *
- * @returns the absolute path of the first \`*.info\` file, or undefined.
+ * @returns the absolute path of the first `*.info` file, or undefined.
  */
 export async function findCodeBuddyAuthFile(): Promise<string | undefined> {
   const override = process.env[AUTH_FILE_ENV]
@@ -189,7 +189,7 @@ export async function findCodeBuddyAuthFile(): Promise<string | undefined> {
  * is fine for the layout CodeBuddy currently ships, but "no usable login" and
  * "no login file where we happened to look" are indistinguishable from the
  * outside, and only one of them is true. A shallow, bounded walk costs one
- * \`readdir\` on a directory that holds a handful of entries and turns a silent
+ * `readdir` on a directory that holds a handful of entries and turns a silent
  * miss into a hit — while the entry and depth caps keep a pathological tree
  * from stalling startup.
  *
@@ -277,8 +277,8 @@ function nonEmptyString(value: unknown): string | undefined {
 /**
  * Derive the account identity from the credential document.
  *
- * \`uid\` is preferred because it is the per-person key the other backends in
- * this catalogue also use; \`enterpriseId\` identifies a tenant, which two
+ * `uid` is preferred because it is the per-person key the other backends in
+ * this catalogue also use; `enterpriseId` identifies a tenant, which two
  * colleagues share, so it is usable but weaker. When neither is present the
  * account is keyed off its FILE NAME: a doc with no identity at all still needs
  * a stable key, and the file is what made it discoverable — inventing a
@@ -304,7 +304,7 @@ function identityOf(document: Record<string, unknown>, file: string): CodeBuddyI
   }
 }
 
-/** The credential file's base name without its \`.info\` suffix. */
+/** The credential file's base name without its `.info` suffix. */
 function fileBaseName(file: string): string {
   const base = file.split(/[\\/]/u).pop() ?? file
   return base.endsWith(AUTH_FILE_SUFFIX) ? base.slice(0, -AUTH_FILE_SUFFIX.length) : base
@@ -334,10 +334,10 @@ export function maskId(value: string): string {
 }
 
 /**
- * Parse one CodeBuddy \`*.info\` document.
+ * Parse one CodeBuddy `*.info` document.
  *
  * Returns undefined for anything that cannot yield a usable bearer token —
- * malformed JSON, a JSON scalar, an empty \`auth\` block, a document whose access
+ * malformed JSON, a JSON scalar, an empty `auth` block, a document whose access
  * token is missing. A parse failure is a definite answer about THIS file, and
  * the caller must not paper over it by trying a different source.
  *
@@ -381,12 +381,12 @@ export function isExpired(credential: CodeBuddyCredential, nowMs = Date.now()): 
 }
 
 /**
- * Locate the official client's \`product.json\` manifests.
+ * Locate the official client's `product.json` manifests.
  *
  * Roots are the same ones the original implementation scans: the VSCode-family
  * extension directories plus CodeBuddy's own. Names are matched loosely (any
- * directory mentioning the official publisher AND \`product.json\` present)
- * rather than against the exact \`tencent-cloud.coding-copilot-<version>\`
+ * directory mentioning the official publisher AND `product.json` present)
+ * rather than against the exact `tencent-cloud.coding-copilot-<version>`
  * prefix, because the publisher renames its extension folder between releases
  * and a rename would otherwise silently downgrade every model to the fallback
  * capacities.
@@ -407,7 +407,7 @@ export function codeBuddyProductCandidates(): readonly string[] {
   return [...new Set(roots)]
 }
 
-/** One entry of an official manifest's \`models\` array. */
+/** One entry of an official manifest's `models` array. */
 interface ProductModelWire {
   id?: unknown
   name?: unknown
@@ -423,16 +423,16 @@ function positiveInteger(value: unknown): number | undefined {
 }
 
 /**
- * Parse an official manifest's \`models\` array into the neutral vocabulary.
+ * Parse an official manifest's `models` array into the neutral vocabulary.
  *
  * Two filters are load-bearing and both come from the original implementation:
- * \`productName\` must literally be \`CodeBuddy\`, so an unrelated extension's
+ * `productName` must literally be `CodeBuddy`, so an unrelated extension's
  * manifest in the same directory cannot masquerade as the roster; and rows
- * carrying \`supportsExtra\` are dropped because they are completion/auxiliary
+ * carrying `supportsExtra` are dropped because they are completion/auxiliary
  * entries that cannot serve a chat turn — offering one in the picker would
  * produce a model that fails on first use.
  *
- * @param product - the parsed \`product.json\` value.
+ * @param product - the parsed `product.json` value.
  * @returns the models it declares, or undefined when this is not the manifest.
  */
 export function parseCodeBuddyModels(product: unknown): readonly BackendModelInfo[] | undefined {

@@ -4,7 +4,7 @@
  *
  * THE PRODUCT, and why it is unlike every other backend here: OpenCode Zen's
  * free models carry a server-side gate. A direct call to
- * \`https://opencode.ai/zen/v1/chat/completions\` is answered with
+ * `https://opencode.ai/zen/v1/chat/completions` is answered with
  *
  *   FreeTierError: OpenCode's free tier can only be used from within OpenCode
  *
@@ -12,24 +12,24 @@
  * header or User-Agent change lifts it — nine spellings were tried, all 403.
  * Only traffic originating from a genuine OpenCode runtime is accepted. So
  * there is no credential to adopt and no key to paste that would work: the
- * entity that authenticates is a PROCESS, which is exactly what \`authKind:
- * 'managed-runtime'\` records.
+ * entity that authenticates is a PROCESS, which is exactly what `authKind:
+ * 'managed-runtime'` records.
  *
  * THE TWO ORIGINALS, and what each contributes:
  *
- *  - \`dsh-opencode-xdbridge\` (the primary) is the honest route. It resolves a
+ *  - `dsh-opencode-xdbridge` (the primary) is the honest route. It resolves a
  *    real OpenCode binary — an installation it manages under its own data
- *    directory, the user's \`opencode\` on PATH, or a one-time ~57 MB download
+ *    directory, the user's `opencode` on PATH, or a one-time ~57 MB download
  *    of the vendor's npm package — starts it isolated on a loopback port, and
  *    speaks to it locally. Its binary resolution order and its data directory
  *    layout are mirrored verbatim below.
- *  - \`dsh-opencode-free-models\` (the contrast) is a panel that registers a
+ *  - `dsh-opencode-free-models` (the contrast) is a panel that registers a
  *    pi-ai transport against the same host with the literal bearer key
- *    \`public\` and the official client's User-Agent. It is worth reading
+ *    `public` and the official client's User-Agent. It is worth reading
  *    precisely because it shows what the gate rejects, and it carries one real
  *    deployment fact this adapter honours: an operator may raise the free-tier
- *    ceiling by exporting \`OPENCODE_ZEN_API_KEY\`, which the original reads as
- *    \`OPENCODE_ZEN_API_KEY || OPENCODE_GO_API_KEY || 'public'\`. That variable
+ *    ceiling by exporting `OPENCODE_ZEN_API_KEY`, which the original reads as
+ *    `OPENCODE_ZEN_API_KEY || OPENCODE_GO_API_KEY || 'public'`. That variable
  *    is deliberately NOT treated as readiness below — with no runtime present
  *    it authenticates nothing, and reporting it as a usable account would
  *    promise exactly the 403 the gate exists to return.
@@ -37,7 +37,7 @@
  * WHAT THIS FILE DELIBERATELY DOES NOT DO. It never downloads, never spawns,
  * and never writes. Migration guidance for the xdbridge plugin says its startup
  * must not be awaited because preparing the runtime can be a 57 MB download —
- * and the shell calls \`discover()\` on every backend at startup and on every
+ * and the shell calls `discover()` on every backend at startup and on every
  * manual refresh. A discover that fetched or spawned would therefore stall the
  * whole plugin on a first run, which is the one failure mode that would take
  * the other backends down with it. {@link OpenCodeImpl.discover} is a pure
@@ -46,15 +46,15 @@
  * belongs to the integration layer, not here.
  *
  * FREE MODELS COME FROM ONE OF TWO PLACES, and the adapter does not pretend
- * otherwise. The runtime is asked for its own catalog first (\`GET /provider\`,
+ * otherwise. The runtime is asked for its own catalog first (`GET /provider`,
  * the route xdbridge reads), and only that response decides what is free: a
  * model counts when every cost dimension is zero. When no runtime is listening
  * the roster degrades to the free tier the second original ships as a constant,
  * and each entry is labelled as such rather than presented as a live reading.
  *
- * \`multiAccount\` is false because the managed runtime starts with a fresh
+ * `multiAccount` is false because the managed runtime starts with a fresh
  * random password per launch and grants no second identity — there is
- * structurally nothing for an "add account" button to write to. \`reportsQuota\`
+ * structurally nothing for an "add account" button to write to. `reportsQuota`
  * is false because OpenCode Zen's free tier has no balance endpoint at all: the
  * models are free, the process is the entitlement, and a zero on the dashboard
  * would read as an exhausted account rather than an absent meter.
@@ -121,7 +121,7 @@ const REQUEST_TIMEOUT_MS = 5_000
  * The free tier as the free-models plugin ships it.
  *
  * Used ONLY when no runtime answers. It exists because the alternative is an
- * empty picker on a machine that has a perfectly good runtime whose \`/provider\`
+ * empty picker on a machine that has a perfectly good runtime whose `/provider`
  * route was momentarily busy, and because one of the two originals genuinely
  * ships this list as its roster. Each entry is relabelled in the detail line so
  * a user looking at a stale id knows which source they are looking at.
@@ -138,7 +138,7 @@ const FREE_TIER_FALLBACK: readonly BackendModelInfo[] = [
 /**
  * The Harness home directory.
  *
- * Mirrors the host's own convention (\`$DSH_HOME\`, else \`~/.dsh\`) rather than
+ * Mirrors the host's own convention (`$DSH_HOME`, else `~/.dsh`) rather than
  * importing the shell's path helper: this module is a leaf, and the one value
  * it needs is cheaper to restate than to couple.
  *
@@ -169,14 +169,14 @@ export function openCodeDataDir(): string {
  * Candidate locations of an OpenCode binary this machine already has.
  *
  * The first group is the xdbridge data directory's managed layout
- * (\`<dataDir>/.opencode/runtime/<version>/opencode[.exe]\`, newest version
+ * (`<dataDir>/.opencode/runtime/<version>/opencode[.exe]`, newest version
  * first because that is the one its own resolver would pick). The second is the
  * original's PATH-independent fallbacks — its own install, then Homebrew and
- * \`/usr/local\` — plus the explicit override, which is checked first because a
+ * `/usr/local` — plus the explicit override, which is checked first because a
  * user who set it has already answered this question.
  *
- * All platform layouts are probed rather than branching on \`process.platform\`,
- * for the same reason Loomy and MiMo do it: the test is a handful of \`stat\`
+ * All platform layouts are probed rather than branching on `process.platform`,
+ * for the same reason Loomy and MiMo do it: the test is a handful of `stat`
  * calls, and a moved or non-standard install is then still found.
  *
  * @returns candidate absolute paths, most-preferred first.
@@ -205,9 +205,9 @@ export function opencodeBinaryCandidates(): readonly string[] {
  * Version directories already installed under the managed runtime root.
  *
  * Newest first, with a numeric-aware comparison, because the directory name is
- * the version and a lexicographic sort puts \`1.9.0\` above \`1.18.0\`. Only names
+ * the version and a lexicographic sort puts `1.9.0` above `1.18.0`. Only names
  * matching the release shape are returned: the root also accumulates
- * \`download.tgz\` and \`.extract\` scratch files, and offering one of those as a
+ * `download.tgz` and `.extract` scratch files, and offering one of those as a
  * binary would produce a confusing spawn failure instead of a clean miss.
  *
  * Unreadable means "nothing installed" rather than an error: the directory is
@@ -232,7 +232,7 @@ export function installedRuntimeVersions(root: string): readonly string[] {
 /**
  * Whether the isolated OpenCode home has been materialised.
  *
- * This is the filesystem trace of a \`startBackend\` that got as far as creating
+ * This is the filesystem trace of a `startBackend` that got as far as creating
  * its XDG roots, which makes it the useful middle state: the binary is present
  * AND has been started at least once, so the runtime is not merely downloadable
  * but proven to run here. It is not the readiness signal on its own — a binary
@@ -255,7 +255,7 @@ function firstExisting(candidates: readonly string[]): string | undefined {
   return candidates.find(candidate => existsSync(candidate))
 }
 
-/** One model as the runtime's \`/provider\` route reports it. */
+/** One model as the runtime's `/provider` route reports it. */
 interface RuntimeModel {
   id: string
   name: string
@@ -283,14 +283,14 @@ function positiveNumber(value: unknown): number | undefined {
  * rather than casting. First, the free tier rotates, so a hardcoded roster goes
  * stale in the direction of offering models that now bill — the one error a
  * user cannot detect until they are charged. Second, a model the runtime has
- * marked \`deprecated\` stays listed by the vendor while failing every call, so
+ * marked `deprecated` stays listed by the vendor while failing every call, so
  * publishing it would put a permanently broken row in the picker.
  *
- * A zero-cost reading is required rather than assumed: a model with no \`cost\`
+ * A zero-cost reading is required rather than assumed: a model with no `cost`
  * block at all is NOT free by default. Absent pricing means the vendor did not
  * say, and guessing in that direction spends the user's money to find out.
  *
- * @param payload - the decoded \`/provider\` body.
+ * @param payload - the decoded `/provider` body.
  * @returns the free models, sorted by id for a stable roster.
  */
 export function parseRuntimeFreeModels(payload: unknown): readonly RuntimeModel[] {
@@ -379,17 +379,17 @@ class OpenCodeImpl implements BackendImpl {
    * deliberately distinct:
    *
    *  - a binary exists → one account representing the runtime itself,
-   *  - the data directory exists but holds no binary → \`[]\`, which the base
+   *  - the data directory exists but holds no binary → `[]`, which the base
    *    class renders as signed-out. The setup was attempted here and is
    *    incomplete, so telling the user to install OpenCode would be wrong: what
    *    they need is the partial state explained, and that is what the runtime's
    *    own panel is for,
-   *  - nothing exists anywhere → \`BackendUnavailable\`, because there is a real
+   *  - nothing exists anywhere → `BackendUnavailable`, because there is a real
    *    prerequisite to prepare and the user has to be told what it is.
    *
-   * The binary is reported as \`usable\` whether or not it has ever been started,
+   * The binary is reported as `usable` whether or not it has ever been started,
    * because "will this binary run on this machine" is not answerable from a
-   * \`stat\` and pretending to answer it would either hide a working setup or
+   * `stat` and pretending to answer it would either hide a working setup or
    * promise a broken one.
    *
    * @returns the runtime account, or none when the setup is incomplete.

@@ -1,0 +1,38 @@
+修复用量面板 404：路由注册用错了 webServer API
+
+症状
+用量面板能渲染，但显示「无法读取用量数据 HTTP 404」。构建、类型检查、
+681 个测试全部通过，只有真实请求能暴露它。
+
+根因
+usage-route.ts 用 webServer.get(path, handler) / webServer.post(path, handler)
+注册路由，而 DSH 的 webServer 服务没有这两个方法。因为都写了可选调用
+（?.），调用静默返回 undefined，两个路由从未挂载 → 浏览器 fetch 404。
+
+正确 API（与插件内 status/probe/login 路由一致）：
+  ctx.effect(() => {
+    const dispose = ctx.webServer.register({ kind: 'exact', path, handler })
+    return () => dispose()
+  }, label)
+且必须从 ctx.inject(['webServer'], webCtx => ...) 内调用，因为该服务是注入的
+而非环境自带的。
+
+改动
+- registerUsageRoute 改用 ctx.webServer.register，两条路由各包一个 ctx.effect
+- 处理器自己检查 HTTP 方法（web server 只按路径分发）
+- 服务尚未就绪时返回 503 而非 404：404 会让用户以为插件没挂载
+- index.ts 把注册移入 ctx.inject(['webServer']) 块，与其它路由并列；
+  处理器按请求解析 service getter，因此路由在服务装配完成前就已存在
+
+防回归
+新增 tests/usage-route-registration.spec.ts（13 个测试）。之前的测试全都
+没验证过「路由真的被注册了」，这正是 bug 得以发布的原因。新测试：
+- 断言 ctx.webServer.register 被以正确的 kind 与路径调用两次
+- 用一个只暴露 register 的 stub（多给一个 .get 反而会让错误调用点在测试里
+  「通过」，比没有测试更糟）
+- 起真实 HTTP 服务驱动处理器：GET 200、非回环 Host/Origin 403、方法错配
+  405、无 key 403、错 key 403、正确 key 200、未知 action 400、未就绪 503
+- 顺带修正：测试非回环 Host 不能用 fetch —— WHATWG fetch 把 Host 列为
+  forbidden header 会静默丢弃覆盖，那样测的是传输层而非安全守卫
+
+681 个测试通过；双端类型检查零错误。

@@ -2319,8 +2319,18 @@ declare class UsageService {
 //#region src/usage-route.d.ts
 /** Constructor dependencies. */
 interface UsageRouteOptions {
-  /** The service building the document. */
-  service: () => UsageService;
+  /**
+   * The service building the document, or undefined while it is still being
+   * assembled.
+   *
+   * A getter rather than a value because registration happens as soon as the
+   * webServer service is available, while the service itself is built by an
+   * asynchronous startup step that loads the ledger. Resolving per request is
+   * what lets the route exist from the first moment without either blocking
+   * startup on the filesystem or pinning a stale service across a fiber
+   * reload.
+   */
+  service: () => UsageService | undefined;
   /** Route path for the read document; defaults to the plugin's own. */
   path?: string;
   /** Route path for the write action; defaults to the plugin's own. */
@@ -2343,15 +2353,23 @@ declare function usageDocumentHandler(service: UsageService, res: ServerResponse
 /**
  * Mount both usage routes on the host's web server.
  *
- * Registers nothing when the web server service is absent — a headless profile
- * serves no browser, and refusing to start there would make the whole plugin
- * unusable over a feature the profile cannot use.
+ * Follows the plugin's existing route convention exactly, because deviating
+ * from it fails SILENTLY: routes are registered through
+ * `ctx.webServer.register({ kind, path, handler })`, and the handler owns the
+ * method check. The first version of this function instead reached for
+ * `webServer.get()` / `webServer.post()` — methods that do not exist on that
+ * service — so every call was an optional call on undefined, no route was ever
+ * mounted, and the browser's fetch came back 404 while the build, the types,
+ * and the tests all stayed green. Nothing but a real request could reveal it.
  *
- * @param ctx - the plugin context.
- * @param options - the service and optional path overrides.
- * @returns the release functions, one per mounted route.
+ * Registration is wrapped in `ctx.effect` so the disposer runs when the fiber
+ * unwinds. The caller must already have injected `webServer`, which is what
+ * makes `ctx.webServer` resolvable here.
+ *
+ * @param ctx - a context that has injected the webServer service.
+ * @param options - the service getter and optional path overrides.
  */
-declare function registerUsageRoute(ctx: Context, options: UsageRouteOptions): (() => void)[];
+declare function registerUsageRoute(ctx: Context, options: UsageRouteOptions): void;
 //#endregion
 //#region src/login.d.ts
 /** Business code `auth/token` returns while the browser half is unfinished. */

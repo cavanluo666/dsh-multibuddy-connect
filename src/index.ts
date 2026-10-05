@@ -1416,6 +1416,15 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   ctx.inject(['webServer'], webCtx => {
+    // The usage dashboard's routes.
+    //
+    // Mounted HERE, beside every other route, because this is the only place
+    // `ctx.webServer` is resolvable — the service is injected, not ambient.
+    // Registration is synchronous and the handler resolves `usageService` per
+    // request, so the route exists from the first moment even though the service
+    // is still being assembled by the async startup step above.
+    registerUsageRoute(webCtx, { service: () => usageService })
+
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
@@ -1709,14 +1718,6 @@ export function apply(ctx: Context, config: Config): void {
         actionKey: () => usageKeys.action,
       })
       if (stopped) return
-      const releases = registerUsageRoute(ctx, { service: () => usageService! })
-      if (releases.length > 0) {
-        try {
-          ctx.effect(() => () => { for (const release of releases) release() })
-        } catch {
-          for (const release of releases) release()
-        }
-      }
       // Accounts are deliberately NOT resolved here: discovery reads other
       // applications' files and, for some backends, performs network calls to
       // establish a session. Doing that during startup would put a vendor's
