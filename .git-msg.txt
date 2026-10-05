@@ -1,38 +1,44 @@
-修复用量面板 404：路由注册用错了 webServer API
+补齐数据面与配置界面：3 个后端可真正发消息、9 个后端可在设置页配置
 
-症状
-用量面板能渲染，但显示「无法读取用量数据 HTTP 404」。构建、类型检查、
-681 个测试全部通过，只有真实请求能暴露它。
+背景
+之前只交付了「管理面」（账号识别/额度读取/模型名册）。这带来两个可见缺口：
+设置页只能配置 WorkBuddy，以及 8 个合并后端根本不在模型选择器里 —— 因为
+它们从未注册 provider，也没有传输层。
 
-根因
-usage-route.ts 用 webServer.get(path, handler) / webServer.post(path, handler)
-注册路由，而 DSH 的 webServer 服务没有这两个方法。因为都写了可选调用
-（?.），调用静默返回 undefined，两个路由从未挂载 → 浏览器 fetch 404。
+新增：可复用的 OpenAI 兼容传输层
+src/backends/openai-compat.ts：把 createProvider + PiAiAdapter 的接线收敛成一处。
+Cline / CodeBuddy / OpenCode 只差 baseUrl、key 与名册的来源，协议与 harness 接缝
+完全相同；写三遍就等于三处在 pi-ai profile 新增必填字段时被遗漏。
 
-正确 API（与插件内 status/probe/login 路由一致）：
-  ctx.effect(() => {
-    const dispose = ctx.webServer.register({ kind: 'exact', path, handler })
-    return () => dispose()
-  }, label)
-且必须从 ctx.inject(['webServer'], webCtx => ...) 内调用，因为该服务是注入的
-而非环境自带的。
+新增：通用的 provider 发布
+index.ts 按 descriptor.serves 静态门控，只为真正能发消息的后端解析账号并注册
+LLM 路由。启动期不再扫描那 8 个无法服务的后端 —— 那会读别家应用的文件、有的还会
+建网络会话，且实测会扰动既有的 catalog 测试。
 
-改动
-- registerUsageRoute 改用 ctx.webServer.register，两条路由各包一个 ctx.effect
-- 处理器自己检查 HTTP 方法（web server 只按路径分发）
-- 服务尚未就绪时返回 503 而非 404：404 会让用户以为插件没挂载
-- index.ts 把注册移入 ctx.inject(['webServer']) 块，与其它路由并列；
-  处理器按请求解析 service getter，因此路由在服务装配完成前就已存在
+新增：三个传输层
+- Cline：OpenAI 兼容，key 逐请求从凭据注册表现取
+- CodeBuddy：OpenAI 兼容，且实现了**内存令牌续期**（不回写桌面端文件，
+  严格只读；刷新令牌轮换，因此缓存放在实例上并做并发单飞）
+- OpenCode：baseUrl 与密码取自运行时端点文档
 
-防回归
-新增 tests/usage-route-registration.spec.ts（13 个测试）。之前的测试全都
-没验证过「路由真的被注册了」，这正是 bug 得以发布的原因。新测试：
-- 断言 ctx.webServer.register 被以正确的 kind 与路径调用两次
-- 用一个只暴露 register 的 stub（多给一个 .get 反而会让错误调用点在测试里
-  「通过」，比没有测试更糟）
-- 起真实 HTTP 服务驱动处理器：GET 200、非回环 Host/Origin 403、方法错配
-  405、无 key 403、错 key 403、正确 key 200、未知 action 400、未就绪 503
-- 顺带修正：测试非回环 Host 不能用 fetch —— WHATWG fetch 把 Host 列为
-  forbidden header 会静默丢弃覆盖，那样测的是传输层而非安全守卫
+新增：多后端配置界面
+- 宿主路由 /plugins/.../backends（GET 文档 / POST 写）与 /backends/action
+  沿用 loopback + 进程内密钥；密钥只以掩码形式下发，永不回传原文
+- 客户端 BackendsCard：一张卡片按后端分节。configurable 的后端（api-key）
+  可增删账号；desktop-adoption 与 managed-runtime **不提供**添加账号控件，
+  改为状态与指引 —— 按钮背后没东西比没有按钮更糟
 
-681 个测试通过；双端类型检查零错误。
+顺带修掉的既有缺陷
+@earendil-works/pi-ai 在本树装了两份、类型面不同，adapter.ts 的 piProvider 赋值
+因此报错，**上游仓库的 typecheck 本来就是失败的**。在两处包边界各加一次带说明的
+类型转换后，全仓库双端 typecheck 首次零错误。
+
+测试 707 个全部通过（新增 26 个后端路由测试，覆盖注册契约、掩码不外泄、
+拒绝为不可配置的后端写入、真实 HTTP 行为）。双端类型检查零错误。
+
+已知限制（诚实记录）
+- OpenCode：原生 server 用 Basic 认证且没有 /v1/chat/completions，
+  本传输层依赖一个 Bearer 校验的 OpenAI 兼容回环代理；直连原生端点会 401/404
+- CodeBuddy：聊天请求可能还需要 X-CodeBuddy-Request 等额外头，
+  当前接口只能表达 Bearer，未验证真实网关
+- Cline / OpenCode 的模型名册是注册时的快照，配置写入或重启后刷新

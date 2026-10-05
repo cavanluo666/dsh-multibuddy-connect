@@ -40,6 +40,8 @@ import type { BackendAdapter } from './backends/types.ts'
 import { UsageLedger } from './usage/ledger.ts'
 import { UsageService } from './usage/service.ts'
 import { createUsageKey, registerUsageRoute } from './usage-route.ts'
+import { createBackendsKey, registerBackendsRoute } from './backends/route.ts'
+import { createOpenAiCompatRoute } from './backends/openai-compat.ts'
 import { WORKBUDDY_CONFIG_ENTRY_ID } from './config-entry.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { WorkBuddyCheckInService, type WorkBuddyCheckInResult } from './checkin.ts'
@@ -984,6 +986,9 @@ function controlKeys(): { probe: string; login: string } {
 /** The usage route's in-process action key, minted once per process. */
 let usageProcessKey: string | undefined
 
+/** The backend-configuration route's in-process action key, minted once. */
+let backendsProcessKey: string | undefined
+
 /** The account identity each variant last published a catalog for, across reloads. */
 const lastIdentities = new Map<string, string>()
 
@@ -1425,6 +1430,21 @@ export function apply(ctx: Context, config: Config): void {
     // is still being assembled by the async startup step above.
     registerUsageRoute(webCtx, { service: () => usageService })
 
+    // The multi-backend configuration card's routes.
+    //
+    // Given the SAME treatment as every other write route: loopback plus the
+    // in-process key, because this one stores credential material.
+    registerBackendsRoute(webCtx, {
+      registry: () => backendRegistry,
+      backends: () => mergedBackends,
+      failures: () => backendFailures,
+      actionKey: () => (backendsProcessKey ??= createBackendsKey()),
+      // A stored account changes nothing until the backends are rebuilt: the
+      // api-key adapters receive their account list at construction, so without
+      // this the new key would be saved and silently unused.
+      reload: async () => { await reloadMergedBackends() },
+    })
+
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
@@ -1689,6 +1709,71 @@ export function apply(ctx: Context, config: Config): void {
   let mergedBackends: readonly BackendAdapter[] = []
   let backendFailures: readonly BackendLoadFailure[] = []
   let usageService: UsageService | undefined
+  /** Disposers for the merged backends' registered LLM routes. */
+  let backendReleases: (() => void)[] = []
+  /** Live routes, so a changed roster can be pushed without re-registering. */
+  const backendRoutes = new Map<string, ReturnType<typeof createOpenAiCompatRoute>>()
+  /** Assigned below; the route closures call it on a write. */
+  let reloadMergedBackends: () => Promise<void> = async () => {}
+
+  /**
+   * Publish every merged backend that can actually serve requests.
+   *
+   * A backend that offers no transport is SKIPPED rather than registered with
+   * an empty roster: a provider that appears in the picker and then fails on
+   * the first message is worse than one that never appears, because the user
+   * only discovers the problem after committing to it.
+   */
+  const publishBackendProviders = async (): Promise<void> => {
+    for (const release of backendReleases) {
+      try { release() } catch { /* already released */ }
+    }
+    backendReleases = []
+    backendRoutes.clear()
+    for (const backend of mergedBackends) {
+      if (stopped) return
+      // Gated on the STATIC declaration, not on a runtime probe: resolving a
+      // backend's accounts reads other applications' files and can establish a
+      // network session. Boot must not pay that for a backend that cannot serve
+      // a request anyway — and an eager sweep here was measurably destabilising
+      // the pre-existing catalog tests when the whole suite ran.
+      if (backend.descriptor.serves !== true) continue
+      try {
+        const availability = await backend.current()
+        if (availability.state !== 'ready') continue
+        const accountId = availability.accounts[0]?.id
+        if (accountId === undefined) continue
+        const transport = await backend.transport?.(accountId)
+        if (transport === undefined) continue
+        const route = createOpenAiCompatRoute({
+          providerId: backend.descriptor.id,
+          displayName: backend.descriptor.displayName,
+          // Read through the transport rather than captured: OpenCode's port is
+          // chosen at runtime startup, and a rotated credential must be picked
+          // up without rebuilding the adapter.
+          baseUrl: () => transport.baseUrl,
+          models: () => transport.models,
+          resolveApiKey: () => transport.resolveApiKey(),
+          resolveAttachments: () => ctx.get('attachments'),
+          ...(transport.displayNameFor === undefined ? {} : { displayNameFor: transport.displayNameFor }),
+        })
+        backendRoutes.set(backend.descriptor.id, route)
+        const releaseAdapter = ctx.llm.registerAdapter([backend.descriptor.id], route.adapter)
+        const releaseDirectory = ctx.llm.registerConfigurableProviders([{
+          provider: backend.descriptor.id,
+          displayName: backend.descriptor.displayName,
+          settingsNs: backend.descriptor.settingsNs as SettingsNamespace,
+          settingsPath: [],
+          declared: false,
+        }])
+        backendReleases.push(releaseAdapter, releaseDirectory)
+        ctx.emit('llm/adapters-updated')
+      } catch (error: unknown) {
+        // One backend's provider failing must not cost the others theirs.
+        ctx.logger.warn('dsh-workbuddy-connect: backend "' + backend.descriptor.id + '" provider registration failed', error)
+      }
+    }
+  }
 
   /**
    * The usage route's per-process action key.
@@ -1699,6 +1784,27 @@ export function apply(ctx: Context, config: Config): void {
    * previous one — every refresh button would 403 until the page reloaded.
    */
   const usageKeys = { get action(): string { return (usageProcessKey ??= createUsageKey()) } }
+
+  /**
+   * Rebuild the merged backend set and republish their providers.
+   *
+   * Called after a configuration write, because a stored account only takes
+   * effect once the adapter that consumes it has been reconstructed.
+   */
+  reloadMergedBackends = async (): Promise<void> => {
+    try {
+      for (const backend of mergedBackends) {
+        try { await backend.dispose?.() } catch { /* already disposed */ }
+      }
+      const loaded = await loadBackends(backendRegistry)
+      mergedBackends = loaded.backends
+      backendFailures = loaded.failures
+      // The usage dashboard reads the same set, so its rows follow the rebuild.
+      await publishBackendProviders()
+    } catch (error: unknown) {
+      ctx.logger.error('dsh-workbuddy-connect: reloading merged backends failed', error)
+    }
+  }
 
   void (async (): Promise<void> => {
     try {
@@ -1718,12 +1824,14 @@ export function apply(ctx: Context, config: Config): void {
         actionKey: () => usageKeys.action,
       })
       if (stopped) return
-      // Accounts are deliberately NOT resolved here: discovery reads other
-      // applications' files and, for some backends, performs network calls to
-      // establish a session. Doing that during startup would put a vendor's
-      // latency — or a hang — on the plugin's boot path. Resolution happens on
-      // first use, which is the moment the answer is actually wanted.
-      ctx.logger.info(`dsh-workbuddy-connect: ${mergedBackends.length} merged backend(s) ready`)
+      // Accounts are deliberately NOT resolved eagerly for the USAGE panel:
+      // discovery reads other applications' files and, for some backends,
+      // performs network calls to establish a session. The provider publication
+      // below does resolve them, but only for the backends that can serve
+      // requests, and each failure is contained.
+      await publishBackendProviders()
+      ctx.logger.info('dsh-workbuddy-connect: ' + String(mergedBackends.length) + ' merged backend(s) ready, '
+        + String(backendRoutes.size) + ' serving models')
     } catch (error: unknown) {
       // Never let the merged half take the plugin down: the WorkBuddy variants
       // are already registered by this point and must keep working.
@@ -1740,6 +1848,12 @@ export function apply(ctx: Context, config: Config): void {
     // Flush the ledger before the process can exit: the in-memory rows are the
     // only copy, and a settings write reloads this fiber.
     void usageLedger.flush().catch(() => undefined)
+    // Release the registered LLM routes before dropping the adapters: a
+    // surviving route would keep dispatching to a disposed backend.
+    for (const release of backendReleases) {
+      try { release() } catch { /* already released */ }
+    }
+    backendReleases = []
     for (const backend of mergedBackends) void backend.dispose?.().catch(() => undefined)
   })
 

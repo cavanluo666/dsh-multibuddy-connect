@@ -30,7 +30,7 @@
  * @module dsh-workbuddy-connect/backends/base
  */
 
-import type { BackendAccount, BackendAdapter, BackendAvailability, BackendDescriptor, BackendModelInfo, QuotaReading } from './types.ts'
+import type { BackendAccount, BackendAdapter, BackendAvailability, BackendDescriptor, BackendModelInfo, BackendTransport, QuotaReading } from './types.ts'
 
 /** Why a backend declared itself unavailable, in the user's terms. */
 export interface UnavailableHint {
@@ -58,6 +58,14 @@ export interface BackendImpl {
   quota?(accountId: string): Promise<QuotaReading>
   /** The models this backend currently serves for one account. */
   models?(accountId: string): Promise<readonly BackendModelInfo[]>
+  /**
+   * The OpenAI-compatible transport, when this backend has one.
+   *
+   * Optional so a backend that cannot serve chat requests simply omits it; the
+   * base class then answers undefined and the shell registers no provider for
+   * it, rather than one that fails on the first message.
+   */
+  transport?(accountId: string): Promise<BackendTransport | undefined>
   /** Release held resources. */
   dispose?(): Promise<void>
 }
@@ -163,6 +171,23 @@ export abstract class BaseBackendAdapter implements BackendAdapter {
       return await this.impl.quota(accountId)
     } catch (error: unknown) {
       return { kind: 'error', message: messageOf(error) }
+    }
+  }
+
+  /**
+   * The backend's OpenAI-compatible transport, when it has one.
+   *
+   * Failures are contained the same way discovery is: a transport that cannot
+   * be built leaves the backend unreachable rather than taking the plugin down,
+   * and undefined tells the shell to register no provider.
+   */
+  async transport(accountId: string): Promise<BackendTransport | undefined> {
+    if (this.impl.transport === undefined) return undefined
+    try {
+      const transport = await this.impl.transport(accountId)
+      return transport === undefined ? undefined : transport
+    } catch {
+      return undefined
     }
   }
 

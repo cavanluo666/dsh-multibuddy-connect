@@ -119,6 +119,28 @@ export interface BackendDescriptor {
   reportsTokenUsage: boolean
   /** Settings namespace this backend's card writes to. */
   settingsNs: string
+  /**
+   * Whether this backend can serve chat requests at all.
+   *
+   * A STATIC statement, separate from the runtime `transport()` capability: the
+   * shell uses it to decide which backends are even worth resolving at startup.
+   * Without it, publishing providers would have to discover EVERY backend's
+   * accounts during boot — reading other applications' files and, for some
+   * backends, establishing a network session — for the eight that cannot serve
+   * a request anyway.
+   *
+   * Absent means false: a backend that has not declared itself leaves boot
+   * alone rather than costing every other plugin a probe.
+   */
+  serves?: boolean
+  /**
+   * The environment variable consulted when no account is configured.
+   *
+   * Only `api-key` backends have one. It is surfaced in the configuration card
+   * so a user who already exports it understands why the backend works without
+   * any stored account, and does not create a duplicate.
+   */
+  envHint?: string
   /** Whether the backend needs a child process / download to function. */
   managesRuntime?: boolean
 }
@@ -277,6 +299,43 @@ export interface BackendAdapter {
    * but shows no models (the sign-in-after-startup case).
    */
   listModels(accountId: string): Promise<readonly BackendModelInfo[]>
+  /**
+   * The OpenAI-compatible transport this backend serves, when it has one.
+   *
+   * Returning undefined is the honest answer for a backend whose next step is
+   * not a chat request: the desktop-adoption backends read another program's
+   * login state and their upstream protocol may not be OpenAI-compatible at
+   * all, so the shell registers no provider for them rather than one that
+   * would fail on the first message.
+   *
+   * The vendor knowledge stays HERE rather than in the shell: which URL, which
+   * key, and how to refresh it are facts about one product, and a shell that
+   * knew them would be nine special cases pretending to be a framework.
+   *
+   * @param accountId - the account to serve; the first discovered account when
+   *   the caller has no preference.
+   * @returns the transport, or undefined when this backend cannot serve one.
+   */
+  transport?(accountId: string): Promise<BackendTransport | undefined>
   /** Release anything the adapter holds (child processes, shims, watchers). */
   dispose?(): Promise<void>
+}
+
+/**
+ * Everything the shell needs to publish a backend's models and route requests.
+ *
+ * `resolveApiKey` is a FUNCTION rather than a string on purpose: a token can
+ * expire or be rotated while the process runs, and capturing it at registration
+ * time would leave the route authenticating with a dead credential until a
+ * restart — a failure the user experiences as "it worked yesterday".
+ */
+export interface BackendTransport {
+  /** OpenAI-compatible base URL, without `/chat/completions`. */
+  baseUrl: string
+  /** Resolve the bearer key for the NEXT request. */
+  resolveApiKey: () => Promise<string>
+  /** The roster to publish. */
+  models: readonly BackendModelInfo[]
+  /** Build the picker-visible name, when the vendor's own name needs a suffix. */
+  displayNameFor?: (model: BackendModelInfo) => string
 }

@@ -292,7 +292,21 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // probed successfully, so there is never a per-model failure to report.
     modelErrors: new Map(),
     ...REQUEST_IMAGE_BUDGETS,
-    piProvider: provider,
+    // Cast across a DUPLICATE PACKAGE boundary, not to silence a real mismatch.
+    //
+    // @earendil-works/pi-ai is installed twice in this tree — once at the top
+    // level and once nested under dsh-llm-pi-ai — and the two copies ship
+    // slightly different type surfaces (the nested Provider union lacks the
+    // Mistral variant). The OBJECT is one of them; only the declaration
+    // differs. This is the single place the two type worlds meet, so the cast
+    // is confined to it.
+    //
+    // The proper fix is a dependency dedupe (a pnpm override), which is an
+    // environment change rather than a code one. Until then this keeps
+    // 'pnpm typecheck' meaningful for the whole repository, which it was not
+    // before: the upstream project shipped with this error failing its own
+    // typecheck.
+    piProvider: provider as unknown as NonNullable<ResolvedPiAiProviderProfile['piProvider']>,
   }
 
   let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])

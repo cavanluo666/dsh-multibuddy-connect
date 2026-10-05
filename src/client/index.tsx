@@ -21,6 +21,8 @@ import { QuotaDashboard, SidebarQuotaCard } from './SidebarQuotaCard.tsx'
 import type { QuotaDashboardInjected, QuotaDashboardState, QuotaDashboardProps, QuotaCopyKey, SidebarQuotaCardInjected, SidebarQuotaCardProps } from './SidebarQuotaCard.tsx'
 import { injectQuotaCss } from './quota-styles.ts'
 import { registerUsagePanel, USAGE_PANEL_ID } from './usage-registration.tsx'
+import { BackendsCard } from './BackendsCard.tsx'
+import { injectBackendsCss } from './backends-styles.ts'
 import { UsageEntryButton } from './UsageEntryButton.tsx'
 import './quota-slots.ts'
 // Side-effect type import: this module carries the `plugins.bundle.config`
@@ -281,13 +283,35 @@ export function apply(ctx: ClientContext): void {
         // the same card. One face, two surfaces.
         inject: unifiedCardInject,
       }, WorkBuddyPluginCard)
+
+      /**
+       * The merged backends' configuration card.
+       *
+       * A SEPARATE entry rather than more sections inside the WorkBuddy card:
+       * that card belongs to the two WorkBuddy products, whose sign-in this
+       * plugin performs itself. The merged backends are a different subject —
+       * most of them cannot be configured here at all, because their credential
+       * belongs to another application — and folding them into the WorkBuddy
+       * card would present two unrelated kinds of thing under one heading.
+       */
+      const registerBackendsItem = (): (() => void) => ctx.slots.register({
+        name: PLUGIN_SETTINGS_ITEM_SLOT,
+        id: PACKAGE_NAME + '-backends',
+        // After the WorkBuddy card (20).
+        order: 21,
+        inject: () => ({}),
+      }, BackendsCard)
+
+      /** Both of this plugin's cards in the shared block, in render order. */
+      const registerItems = (): (() => void)[] => [registerItem(), registerBackendsItem()]
+
       // The callback returns its disposers: `slots.inject` owns them for the
       // declaration's lifetime, so the container and this plugin's card are
       // torn down together when the shell collapses `settings.section`.
       ctx.slots.inject('settings.section', () => {
         const taken = ctx.slots.entries('settings.section')
           .some(entry => entry.options?.id === PLUGIN_SETTINGS_SECTION_ID)
-        if (taken) return registerItem()
+        if (taken) return registerItems()
         try {
           const disposeContainer = ctx.slots.register({
             name: 'settings.section',
@@ -300,11 +324,11 @@ export function apply(ctx: ClientContext): void {
             label: () => '插件设置',
             children: { [PLUGIN_SETTINGS_ITEM_SLOT]: { kind: 'list', scope: 'root' } },
           }, PluginSettingsSection)
-          return [disposeContainer, registerItem()]
+          return [disposeContainer, ...registerItems()]
         } catch {
           // A sibling registered the container between the probe and this
           // call: its child slot is declared, so attach to it instead.
-          return registerItem()
+          return registerItems()
         }
       })
     }
@@ -502,6 +526,7 @@ export function apply(ctx: ClientContext): void {
     })
 
     ctx.effect(() => injectQuotaCss(), 'dsh-workbuddy-connect: quota styles')
+    ctx.effect(() => injectBackendsCss(), 'dsh-workbuddy-connect: backend card styles')
 
     // The dashboard cell itself needs no gate: registering for a declaration
     // that never arrives is a no-op by construction.

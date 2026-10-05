@@ -60,6 +60,7 @@ export const COMMANDCODE_DESCRIPTOR: BackendDescriptor = {
   reportsQuota: false,
   reportsTokenUsage: false,
   settingsNs: 'commandcode-go-provider',
+  envHint: COMMANDCODE_API_KEY_ENV,
 }
 
 /** Context capacity assumed when the listing discloses none. */

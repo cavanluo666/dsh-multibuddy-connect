@@ -66,7 +66,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BaseBackendAdapter, BackendUnavailable, type BackendImpl, type DiscoveredAccount } from './base.ts'
-import type { BackendDescriptor, BackendModelInfo } from './types.ts'
+import type { BackendDescriptor, BackendModelInfo, BackendTransport } from './types.ts'
 
 /** The descriptor this backend registers under. */
 export const OPENCODE_DESCRIPTOR: BackendDescriptor = {
@@ -84,6 +84,7 @@ export const OPENCODE_DESCRIPTOR: BackendDescriptor = {
   reportsQuota: false,
   reportsTokenUsage: false,
   settingsNs: 'opencode-xdbridge',
+  serves: true,
   // The child process, and on a first run the binary it needs, are real. The
   // shell must not treat this backend as a plain in-process adapter.
   managesRuntime: true,
@@ -451,6 +452,64 @@ class OpenCodeImpl implements BackendImpl {
       name: model.name + '（内置清单）',
       rate: '免费',
     }))
+  }
+
+  /**
+   * 交给 shell 的 OpenAI 兼容传输声明。
+   *
+   * baseUrl 为什么在这里现读：运行时每次启动都从操作系统随机取端口，端口本身
+   * 无法推导，只能读它自己写下的 runtime.json —— opencodeRuntimeEndpoint()
+   * 就是这个文档的唯一入口，并且强制只接受回环地址。但 BackendTransport.baseUrl
+   * 是静态字符串，所以这个端口只在 transport() 被调用的那一刻取一次快照：
+   * 运行时重启换了端口之后，必须重新调用 transport()（shell 在刷新时会重新发布
+   * provider）才会指向新端口，否则请求会打到一个已经消失的旧端口上。
+   *
+   * models 为什么不在这里重新解析：运行时在线时向它要自己的 /provider 目录，
+   * 离线时回落到内置清单 —— 这正是 models() 已经做的事。两处各写一遍会让选择器
+   * 里能选、真正发送时却不存在的模型出现在名单里。
+   *
+   * 运行时不在就返回 undefined 而不是抛：没有运行时就没有任何端点值得注册，
+   * shell 据此跳过这个 provider，比注册一个每次对话都必然失败的 provider 诚实。
+   *
+   * @param accountId - 该运行时唯一的账号；这里透传给模型名单以保持签名一致。
+   * @returns 传输声明；运行时未就绪时为 undefined。
+   */
+  async transport(accountId: string): Promise<BackendTransport | undefined> {
+    const endpoint = opencodeRuntimeEndpoint()
+    if (endpoint === undefined) return undefined
+    return {
+      // OpenAI 兼容面的路径约定是 /v1（pi-ai 会再拼上 /chat/completions）；
+      // runtime.json 里记的只是端口，路径由这里补全。
+      baseUrl: endpoint.baseUrl + '/v1',
+      models: await this.models(accountId),
+      resolveApiKey: async () => {
+        // 每次请求现取，绝不把密码捕获成常量：运行时每次启动都会换一个随机密码，
+        // 而 pi-ai 不持有这个 key —— openai-compat 的路由每次请求都会调回这里。
+        // 一旦把首次读到的值存下来，用户看到的就是"昨天还能用、今天全是 401"。
+        const current = opencodeRuntimeEndpoint()
+        if (current === undefined) {
+          throw new Error(
+            'OpenCode 本地运行时当前不可达：读不到端点文档 ' + join(openCodeDataDir(), 'runtime.json')
+            + '。请先启动运行时，再重新选择模型。',
+          )
+        }
+        if (current.password === '') {
+          throw new Error(
+            'OpenCode 本地运行时的端点文档里没有认证密码，取不到可用凭据。'
+            + '请重新启动运行时（它会在启动时生成新密码并重写端点文档）。',
+          )
+        }
+        // 原实现（xdbridge 的 backend.js）用的是 Basic：Authorization: Basic
+        // base64('opencode:' + password)，用户名固定 opencode —— 那是 OpenCode
+        // server 自己的要求（官方文档：OPENCODE_SERVER_PASSWORD 走 HTTP basic auth）。
+        // 这条缝只能表达一个 Bearer 字符串：pi-ai 的 openai-completions 会把 apiKey
+        // 拼成 Authorization: Bearer <key>，拼不出 Basic 头。所以这里交出密码本身：
+        // 它与端点文档同源、每次现取；当回环上暴露 OpenAI 兼容面的那个东西（例如
+        // xdbridge 的 shim）以 Bearer 校验时，这就是它要的 key。若 runtime.json 直接
+        // 指向 OpenCode server 的原生端口，这个头会被它的 Basic 校验判成未认证。
+        return current.password
+      },
+    }
   }
 
   /**
