@@ -49,22 +49,40 @@ for upstream attribution.
 
 | Backend | Vendor | Credential source | Can chat | Multi-account | Quota |
 |---|---|---|:---:|:---:|:---:|
-| WorkBuddy / WorkBuddy AI | Tencent | Plugin's own web device authorization | ✅ | Yes | Yes |
-| Cline | Cline | API key | ✅ | Yes | Free tier |
+| WorkBuddy / WorkBuddy AI | Tencent | Plugin's own web device authorization | ✅ | No | Yes |
+| Cline | Cline | API key | ✅ | Yes (multi-key) | Free tier |
 | CodeBuddy | Tencent | Desktop login file (read-only) | ⚠️ unverified | No | No endpoint |
 | OpenCode Zen | OpenCode | Managed local runtime | ⚠️ needs proxy | No | No endpoint |
-| Trae | ByteDance | Desktop sign-in (4 installs) | ❌ **detect only** | Yes (2 regions) | See gaps |
-| Qoder | Alibaba | Desktop sign-in / PAT env var | ❌ **detect only** | Yes (2 regions) | See gaps |
+| Trae | ByteDance | Desktop sign-in (4 installs) | ❌ **detect only** | No | See gaps |
+| Qoder | Alibaba | Desktop sign-in / PAT env var | ❌ **detect only** | No | See gaps |
 | MiMo | Xiaomi | Desktop cookie / plugin credential | ❌ **detect only** | No | Yes |
 | Loomy | iFlytek | Desktop `auth-session.json` (read-only) | ❌ **detect only** | No | No endpoint |
-| Command Code Go | Command Code | API key | ❌ **detect only** | Yes | No endpoint |
+| Command Code Go | Command Code | API key | ❌ **detect only** | Yes (multi-key) | No endpoint |
 
 ## Multi-account, honestly stated
 
-WorkBuddy, Trae, Qoder, Cline and Command Code support **several independent
-accounts**. CodeBuddy, MiMo and Loomy cannot: they read **another desktop
-application's single login slot**, so one installed client means one account.
-The UI does not offer an "add account" control with nothing to write to.
+**Regions are not accounts.** WorkBuddy's CN/international pair, and Trae's and
+Qoder's, are two DIFFERENT PRODUCTS — different upstreams, different account
+systems. Running both gives you one account per product, not two accounts of
+one product.
+
+By "can one product hold several accounts":
+
+| Capability | Backends |
+|---|---|
+| ✅ **Real multi-account** | **Cline**, **Command Code Go** — API-key auth, the credential belongs to this plugin, so any number can be configured |
+| ❌ Single account | WorkBuddy / WorkBuddy AI / Trae / Qoder / CodeBuddy / MiMo / Loomy / OpenCode |
+
+The reasons differ:
+
+- **The two WorkBuddy variants** keep ONE credential file each
+  (`.workbuddy-auth.json` / `.workbuddy-ai-auth.json`); there is no account list.
+  That is the upstream design this project deliberately leaves untouched, because
+  it is the compatibility anchor.
+- **Trae / Qoder / CodeBuddy / MiMo / Loomy** read ANOTHER desktop application's
+  single login slot, so one installed client means one account. That is the
+  vendor's model, not a shortcut here.
+- No card offers an "add account" control that would have nothing to write to.
 
 ## Install
 
